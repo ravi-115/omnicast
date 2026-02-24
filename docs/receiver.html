@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>OmniCast WebRTC Receiver</title>
+    <script src="//www.gstatic.com/cast/sdk/libs/caf_receiver/v3/cast_receiver_framework.js"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background-color: #000;
+        }
+        #remoteVideo {
+            width: 100vw;
+            height: 100vh;
+            object-fit: contain;
+        }
+        #status {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: white;
+            font-family: Arial, sans-serif;
+            font-size: 18px;
+            background-color: rgba(0, 0, 0, 0.7);
+            padding: 10px 20px;
+            border-radius: 5px;
+            z-index: 1000;
+        }
+    </style>
+</head>
+<body>
+    <div id="status">Waiting for connection...</div>
+    <video id="remoteVideo" autoplay playsinline></video>
+
+    <script>
+        const WEBRTC_NAMESPACE = 'urn:x-cast:com.omnicast.webrtc';
+        
+        let peerConnection = null;
+        let castContext = null;
+        const statusDiv = document.getElementById('status');
+        const remoteVideo = document.getElementById('remoteVideo');
+        
+        function updateStatus(message) {
+            console.log('[OmniCast Receiver]', message);
+            statusDiv.textContent = message;
+            
+            // Hide status after 3 seconds if connected
+            if (message.includes('Connected') || message.includes('Streaming')) {
+                setTimeout(() => {
+                    statusDiv.style.opacity = '0';
+                }, 3000);
+            }
+        }
+        
+        // WebRTC configuration
+        const rtcConfig = {
+            iceServers: [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:stun1.l.google.com:19302' }
+            ]
+        };
+        
+        function initializePeerConnection() {
+            if (peerConnection) {
+                peerConnection.close();
+            }
+            
+            updateStatus('Creating peer connection...');
+            peerConnection = new RTCPeerConnection(rtcConfig);
+            
+            // Handle incoming tracks
+            peerConnection.ontrack = (event) => {
+                updateStatus('Received video track');
+                console.log('[WebRTC] Track received:', event.track.kind);
+                
+                if (event.streams && event.streams[0]) {
+                    remoteVideo.srcObject = event.streams[0];
+                    updateStatus('Streaming video');
+                } else {
+                    const stream = new MediaStream();
+                    stream.addTrack(event.track);
+                    remoteVideo.srcObject = stream;
+                    updateStatus('Streaming video');
+                }
+            };
+            
+            // Handle ICE candidates
+            peerConnection.onicecandidate = (event) => {
+                if (event.candidate) {
+                    console.log('[WebRTC] Generated ICE candidate');
+                    const message = {
+                        type: 'iceCandidate',
+                        candidate: event.candidate.candidate,
+                        sdpMid: event.candidate.sdpMid,
+                        sdpMLineIndex: event.candidate.sdpMLineIndex
+                    };
+                    sendMessage(message);
+                }
+            };
+            
+            // Connection state changes
+            peerConnection.onconnectionstatechange = () => {
+                console.log('[WebRTC] Connection state:', peerConnection.connectionState);
+                updateStatus('Connection: ' + peerConnection.connectionState);
+                
+                if (peerConnection.connectionState === 'connected') {
+                    updateStatus('🎥 Connected - Streaming');
+                } else if (peerConnection.connectionState === 'failed') {
+                    updateStatus('❌ Connection failed');
+                }
+            };
+            
+            peerConnection.oniceconnectionstatechange = () => {
+                console.log('[WebRTC] ICE connection state:', peerConnection.iceConnectionState);
+            };
+        }
+        
+        function sendMessage(message) {
+            if (!castContext) {
+                console.error('[Cast] Context not initialized');
+                return;
+            }
+            
+            const jsonMessage = JSON.stringify(message);
+            console.log('[Cast] Sending message:', message.type);
+            
+            castContext.sendCustomMessage(WEBRTC_NAMESPACE, undefined, jsonMessage);
+        }
+        
+        async function handleOffer(data) {
+            try {
+                updateStatus('Processing offer...');
+                console.log('[WebRTC] Received offer');
+                
+                initializePeerConnection();
+                
+                // Set remote description
+                const offer = new RTCSessionDescription({
+                    type: 'offer',
+                    sdp: data.sdp
+                });
+                
+                await peerConnection.setRemoteDescription(offer);
+                console.log('[WebRTC] Remote description set');
+                
+                // Create answer
+                const answer = await peerConnection.createAnswer();
+                await peerConnection.setLocalDescription(answer);
+                console.log('[WebRTC] Local description set');
+                
+                // Send answer back
+                const answerMessage = {
+                    type: 'answer',
+                    sdp: answer.sdp
+                };
+                sendMessage(answerMessage);
+                updateStatus('Answer sent, establishing connection...');
+                
+            } catch (error) {
+                console.error('[WebRTC] Error handling offer:', error);
+                updateStatus('❌ Error: ' + error.message);
+            }
+        }
+        
+        async function handleIceCandidate(data) {
+            try {
+                if (!peerConnection) {
+                    console.warn('[WebRTC] Peer connection not initialized for ICE candidate');
+                    return;
+                }
+                
+                const candidate = new RTCIceCandidate({
+                    candidate: data.candidate,
+                    sdpMid: data.sdpMid,
+                    sdpMLineIndex: data.sdpMLineIndex
+                });
+                
+                await peerConnection.addIceCandidate(candidate);
+                console.log('[WebRTC] ICE candidate added');
+                
+            } catch (error) {
+                console.error('[WebRTC] Error adding ICE candidate:', error);
+            }
+        }
+        
+        function handleCustomMessage(event) {
+            try {
+                const data = JSON.parse(event.data);
+                console.log('[Cast] Received message type:', data.type);
+                
+                switch (data.type) {
+                    case 'offer':
+                        handleOffer(data);
+                        break;
+                    case 'iceCandidate':
+                        handleIceCandidate(data);
+                        break;
+                    default:
+                        console.log('[Cast] Unknown message type:', data.type);
+                }
+            } catch (error) {
+                console.error('[Cast] Error parsing message:', error);
+            }
+        }
+        
+        // Initialize Cast Receiver
+        window.addEventListener('load', () => {
+            updateStatus('Initializing Cast Receiver...');
+            
+            const context = cast.framework.CastReceiverContext.getInstance();
+            castContext = context;
+            
+            // Set up custom message handling
+            context.addCustomMessageListener(WEBRTC_NAMESPACE, handleCustomMessage);
+            console.log('[Cast] Listening on namespace:', WEBRTC_NAMESPACE);
+            
+            // Optional: Configure receiver options
+            const options = new cast.framework.CastReceiverOptions();
+            options.disableIdleTimeout = true;
+            
+            // Start the receiver
+            context.start(options);
+            updateStatus('✅ Ready for WebRTC connection');
+            console.log('[Cast] Receiver started');
+        });
+    </script>
+</body>
+</html>
