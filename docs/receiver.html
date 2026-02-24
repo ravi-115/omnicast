@@ -41,10 +41,12 @@
         let castContext = null;
         const statusDiv = document.getElementById('status');
         const remoteVideo = document.getElementById('remoteVideo');
+        let messageCount = 0;
         
         function updateStatus(message) {
             console.log('[OmniCast Receiver]', message);
             statusDiv.textContent = message;
+            statusDiv.style.opacity = '1';  // Make sure it's visible
             
             // Hide status after 3 seconds if connected
             if (message.includes('Connected') || message.includes('Streaming')) {
@@ -188,11 +190,16 @@
         
         function handleCustomMessage(event) {
             try {
+                messageCount++;
+                updateStatus(`📨 Message #${messageCount} received`);
+                
                 console.log('[Cast] Received raw message from sender:', event.senderId);
                 console.log('[Cast] Message data:', event.data);
                 
                 const data = JSON.parse(event.data);
                 console.log('[Cast] Parsed message type:', data.type);
+                
+                updateStatus(`Processing ${data.type}...`);
                 
                 switch (data.type) {
                     case 'offer':
@@ -203,10 +210,12 @@
                         break;
                     default:
                         console.log('[Cast] Unknown message type:', data.type);
+                        updateStatus(`❓ Unknown: ${data.type}`);
                 }
             } catch (error) {
                 console.error('[Cast] Error parsing message:', error);
                 console.error('[Cast] Raw data:', event.data);
+                updateStatus(`❌ Parse error: ${error.message}`);
             }
         }
         
