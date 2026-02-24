@@ -124,8 +124,9 @@
             }
             
             const jsonMessage = JSON.stringify(message);
-            console.log('[Cast] Sending message:', message.type);
+            console.log('[Cast] Sending message:', message.type, 'to senderId:', event?.senderId || 'broadcast');
             
+            // Send to all connected senders
             castContext.sendCustomMessage(WEBRTC_NAMESPACE, undefined, jsonMessage);
         }
         
@@ -186,9 +187,11 @@
         }
         
         function handleCustomMessage(event) {
-            try {
+            try {ole.log('[Cast] Received raw message from sender:', event.senderId);
+                console.log('[Cast] Message data:', event.data);
+                
                 const data = JSON.parse(event.data);
-                console.log('[Cast] Received message type:', data.type);
+                console.log('[Cast] Parsed message type:', data.type);
                 
                 switch (data.type) {
                     case 'offer':
@@ -202,6 +205,8 @@
                 }
             } catch (error) {
                 console.error('[Cast] Error parsing message:', error);
+                console.error('[Cast] Raw data:', event.data);
+                console.error('[Cast] Error parsing message:', error);
             }
         }
         
@@ -211,6 +216,17 @@
             
             const context = cast.framework.CastReceiverContext.getInstance();
             castContext = context;
+            
+            // Add sender connected/disconnected handlers
+            context.addEventListener(cast.framework.system.EventType.SENDER_CONNECTED, () => {
+                console.log('[Cast] Sender connected');
+                updateStatus('📱 Sender connected - Ready for WebRTC');
+            });
+            
+            context.addEventListener(cast.framework.system.EventType.SENDER_DISCONNECTED, () => {
+                console.log('[Cast] Sender disconnected');
+                updateStatus('Sender disconnected');
+            });
             
             // Set up custom message handling
             context.addCustomMessageListener(WEBRTC_NAMESPACE, handleCustomMessage);
@@ -223,7 +239,7 @@
             // Start the receiver
             context.start(options);
             updateStatus('✅ Ready for WebRTC connection');
-            console.log('[Cast] Receiver started');
+            console.log('[Cast] Receiver started and ready');
         });
     </script>
 </body>
