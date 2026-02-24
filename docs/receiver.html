@@ -194,11 +194,18 @@
                 updateStatus(`📨 Message #${messageCount} received`);
                 
                 console.log('[Cast] Received raw message from sender:', event.senderId);
+                console.log('[Cast] Message data type:', typeof event.data);
                 console.log('[Cast] Message data:', event.data);
                 
-                const data = JSON.parse(event.data);
-                console.log('[Cast] Parsed message type:', data.type);
+                // Cast SDK may auto-parse JSON, so handle both object and string
+                let data;
+                if (typeof event.data === 'string') {
+                    data = JSON.parse(event.data);
+                } else {
+                    data = event.data;  // Already an object
+                }
                 
+                console.log('[Cast] Parsed message type:', data.type);
                 updateStatus(`Processing ${data.type}...`);
                 
                 switch (data.type) {
@@ -215,6 +222,7 @@
             } catch (error) {
                 console.error('[Cast] Error parsing message:', error);
                 console.error('[Cast] Raw data:', event.data);
+                console.error('[Cast] Data type:', typeof event.data);
                 updateStatus(`❌ Parse error: ${error.message}`);
             }
         }
