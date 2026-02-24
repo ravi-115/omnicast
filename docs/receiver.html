@@ -187,7 +187,8 @@
         }
         
         function handleCustomMessage(event) {
-            try {ole.log('[Cast] Received raw message from sender:', event.senderId);
+            try {
+                console.log('[Cast] Received raw message from sender:', event.senderId);
                 console.log('[Cast] Message data:', event.data);
                 
                 const data = JSON.parse(event.data);
@@ -206,7 +207,6 @@
             } catch (error) {
                 console.error('[Cast] Error parsing message:', error);
                 console.error('[Cast] Raw data:', event.data);
-                console.error('[Cast] Error parsing message:', error);
             }
         }
         
