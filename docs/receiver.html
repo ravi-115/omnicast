@@ -122,9 +122,13 @@
                 
                 audioPlayer.oncanplay = () => {
                     console.log('[Audio] Ready to play');
+                    updateStatus('🎵 Starting playback...');
                     audioPlayer.play().then(() => {
                         updateStatus('🎵 Playing audio');
                         console.log('[Audio] Playing successfully');
+                        console.log('[Audio] Audio src:', audioPlayer.src);
+                        console.log('[Audio] Audio duration:', audioPlayer.duration);
+                        console.log('[Audio] Audio readyState:', audioPlayer.readyState);
                         
                         // Send MEDIA_STATUS response
                         sendMediaStatus(data.requestId, 'PLAYING');
@@ -136,9 +140,27 @@
                 };
                 
                 audioPlayer.onerror = (e) => {
-                    console.error('[Audio] Load error:', audioPlayer.error);
-                    updateStatus('❌ Load error: ' + (audioPlayer.error?.message || 'Unknown'));
+                    const errorCode = audioPlayer.error ? audioPlayer.error.code : 'unknown';
+                    const errorMessage = audioPlayer.error ? audioPlayer.error.message : 'Unknown error';
+                    console.error('[Audio] Load error code:', errorCode);
+                    console.error('[Audio] Load error message:', errorMessage);
+                    console.error('[Audio]  Audio src:', audioPlayer.src);
+                    updateStatus('❌ Load error: ' + errorCode + ' - ' + errorMessage);
                     sendMediaStatus(data.requestId, 'IDLE');
+                };
+                
+                audioPlayer.onplaying = () => {
+                    console.log('[Audio] Now playing');
+                    updateStatus('🔊 Audio streaming');
+                };
+                
+                audioPlayer.onstalled = () => {
+                    console.warn('[Audio] Playback stalled');
+                };
+                
+                audioPlayer.onwaiting = () => {
+                    console.warn('[Audio] Buffering...');
+                    updateStatus('⏳ Buffering...');
                 };
                 
                 audioPlayer.onended = () => {
@@ -176,35 +198,57 @@
             castContext.sendCustomMessage(MEDIA_NAMESPACE, undefined, status);
         }
         
-        function handleMediaCommand(data) {
+        function handleMediaCommand(event) {
             try {
-                console.log('[Audio] Media command:', data.type);
+                console.log('[Audio] Received custom message');
+                console.log('[Audio] Event:', event);
+                console.log('[Audio] Sender ID:', event.senderId);
+                
+                // Cast SDK may auto-parse JSON
+                let data;
+                if (typeof event.data === 'string') {
+                    console.log('[Audio] Parsing JSON string');
+                    data = JSON.parse(event.data);
+                } else {
+                    console.log('[Audio] Data already parsed');
+                    data = event.data;
+                }
+                
+                console.log('[Audio] Command type:', data.type);
+                console.log('[Audio] Full data:', data);
                 
                 switch (data.type) {
                     case 'LOAD':
                         handleMediaLoad(data);
                         break;
                     case 'PLAY':
+                        console.log('[Audio] PLAY command');
                         audioPlayer.play();
                         sendMediaStatus(data.requestId, 'PLAYING');
                         break;
                     case 'PAUSE':
+                        console.log('[Audio] PAUSE command');
                         audioPlayer.pause();
                         sendMediaStatus(data.requestId, 'PAUSED');
                         break;
                     case 'STOP':
+                        console.log('[Audio] STOP command');
                         audioPlayer.pause();
                         audioPlayer.currentTime = 0;
                         sendMediaStatus(data.requestId, 'IDLE');
                         break;
                     case 'GET_STATUS':
+                        console.log('[Audio] GET_STATUS command');
                         sendMediaStatus(data.requestId, audioPlayer.paused ? 'PAUSED' : 'PLAYING');
                         break;
                     default:
                         console.log('[Audio] Unknown command:', data.type);
+                        updateStatus('❓ Unknown command: ' + data.type);
                 }
             } catch (error) {
                 console.error('[Audio] Command error:', error);
+                console.error('[Audio] Stack:', error.stack);
+                updateStatus('❌ Error: ' + error.message);
             }
         }
         
