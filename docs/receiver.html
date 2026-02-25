@@ -96,15 +96,20 @@
         function handleMediaLoad(data) {
             try {
                 updateStatus('Loading audio...');
-                console.log('[Audio] Received LOAD command:', data);
+                console.log('[Audio] Received LOAD command - full data:', JSON.stringify(data, null, 2));
                 
                 const media = data.media || {};
                 const contentId = media.contentId;
                 const contentType = media.contentType || 'audio/x-wav';
                 
-                if (!contentId) {
-                    console.error('[Audio] No contentId in media');
-                    updateStatus('❌ No audio URL provided');
+                console.log('[Audio] Extracted media object:', media);
+                console.log('[Audio] Extracted contentId:', contentId);
+                console.log('[Audio] ContentId type:', typeof contentId);
+                
+                if (!contentId || contentId === '') {
+                    console.error('[Audio] No contentId in media - data:', data);
+                    console.error('[Audio] Media keys:', Object.keys(media));
+                    updateStatus('❌ No audio URL provided (contentId is empty)');
                     return;
                 }
                 
@@ -117,8 +122,11 @@
                 audioVisualizer.style.display = 'block';
                 
                 // Load and play audio
+                console.log('[Audio] Setting audioPlayer.src to:', contentId);
                 audioPlayer.src = contentId;
+                console.log('[Audio] audioPlayer.src is now:', audioPlayer.src);
                 audioPlayer.load();
+                console.log('[Audio] audioPlayer.load() called');
                 
                 audioPlayer.oncanplay = () => {
                     console.log('[Audio] Ready to play');
