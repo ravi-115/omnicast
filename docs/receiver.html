@@ -2,7 +2,7 @@
 <html>
 <head>
     <meta charset="utf-8">
-    <title>OmniCast WebRTC Receiver</title>
+    <title>OmniCast Audio+Video Receiver</title>
     <script src="//www.gstatic.com/cast/sdk/libs/caf_receiver/v3/cast_receiver_framework.js"></script>
     <style>
         body {
@@ -15,6 +15,10 @@
             width: 100vw;
             height: 100vh;
             object-fit: contain;
+            display: none;
+        }
+        #audioPlayer {
+            display: none;
         }
         #status {
             position: absolute;
@@ -28,35 +32,184 @@
             border-radius: 5px;
             z-index: 1000;
         }
+        #audioVisualizer {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+            color: white;
+            font-family: Arial, sans-serif;
+        }
+        #audioTitle {
+            font-size: 36px;
+            margin-bottom: 20px;
+        }
+        #audioWaveform {
+            font-size: 72px;
+            animation: pulse 1s infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { transform: scale(1); opacity: 0.8; }
+            50% { transform: scale(1.2); opacity: 1; }
+        }
     </style>
 </head>
 <body>
     <div id="status">Waiting for connection...</div>
     <video id="remoteVideo" autoplay playsinline></video>
+    <audio id="audioPlayer" autoplay></audio>
+    
+    <div id="audioVisualizer" style="display: none;">
+        <div id="audioTitle">🎵 OmniCast Audio</div>
+        <div id="audioWaveform">♪ ♫ ♪ ♫ ♪</div>
+    </div>
 
     <script>
         const WEBRTC_NAMESPACE = 'urn:x-cast:com.omnicast.webrtc';
+        const MEDIA_NAMESPACE = 'urn:x-cast:com.google.cast.media';
         
         let peerConnection = null;
         let castContext = null;
         const statusDiv = document.getElementById('status');
         const remoteVideo = document.getElementById('remoteVideo');
+        const audioPlayer = document.getElementById('audioPlayer');
+        const audioVisualizer = document.getElementById('audioVisualizer');
         let messageCount = 0;
+        let currentMode = null; // 'audio' or 'video'
         
         function updateStatus(message) {
             console.log('[OmniCast Receiver]', message);
             statusDiv.textContent = message;
-            statusDiv.style.opacity = '1';  // Make sure it's visible
+            statusDiv.style.opacity = '1';
             
             // Hide status after 3 seconds if connected
-            if (message.includes('Connected') || message.includes('Streaming')) {
+            if (message.includes('Connected') || message.includes('Streaming') || message.includes('Playing')) {
                 setTimeout(() => {
                     statusDiv.style.opacity = '0';
                 }, 3000);
             }
         }
         
-        // WebRTC configuration
+        // ==================== AUDIO STREAMING ====================
+        
+        function handleMediaLoad(data) {
+            try {
+                updateStatus('Loading audio...');
+                console.log('[Audio] Received LOAD command:', data);
+                
+                const media = data.media || {};
+                const contentId = media.contentId;
+                const contentType = media.contentType || 'audio/x-wav';
+                
+                if (!contentId) {
+                    console.error('[Audio] No contentId in media');
+                    updateStatus('❌ No audio URL provided');
+                    return;
+                }
+                
+                console.log('[Audio] Loading:', contentId);
+                console.log('[Audio] Type:', contentType);
+                
+                // Switch to audio mode
+                currentMode = 'audio';
+                remoteVideo.style.display = 'none';
+                audioVisualizer.style.display = 'block';
+                
+                // Load and play audio
+                audioPlayer.src = contentId;
+                audioPlayer.load();
+                
+                audioPlayer.oncanplay = () => {
+                    console.log('[Audio] Ready to play');
+                    audioPlayer.play().then(() => {
+                        updateStatus('🎵 Playing audio');
+                        console.log('[Audio] Playing successfully');
+                        
+                        // Send MEDIA_STATUS response
+                        sendMediaStatus(data.requestId, 'PLAYING');
+                    }).catch(error => {
+                        console.error('[Audio] Play error:', error);
+                        updateStatus('❌ Playback error: ' + error.message);
+                        sendMediaStatus(data.requestId, 'IDLE');
+                    });
+                };
+                
+                audioPlayer.onerror = (e) => {
+                    console.error('[Audio] Load error:', audioPlayer.error);
+                    updateStatus('❌ Load error: ' + (audioPlayer.error?.message || 'Unknown'));
+                    sendMediaStatus(data.requestId, 'IDLE');
+                };
+                
+                audioPlayer.onended = () => {
+                    console.log('[Audio] Playback ended');
+                    updateStatus('Audio ended');
+                    sendMediaStatus(data.requestId, 'IDLE');
+                };
+                
+            } catch (error) {
+                console.error('[Audio] Error in handleMediaLoad:', error);
+                updateStatus('❌ Error: ' + error.message);
+            }
+        }
+        
+        function sendMediaStatus(requestId, playerState) {
+            if (!castContext) return;
+            
+            const status = {
+                type: 'MEDIA_STATUS',
+                requestId: requestId || 0,
+                status: [{
+                    mediaSessionId: 1,
+                    playbackRate: 1,
+                    playerState: playerState,
+                    currentTime: audioPlayer.currentTime,
+                    supportedMediaCommands: 15,
+                    volume: {
+                        level: audioPlayer.volume,
+                        muted: audioPlayer.muted
+                    }
+                }]
+            };
+            
+            console.log('[Audio] Sending status:', playerState);
+            castContext.sendCustomMessage(MEDIA_NAMESPACE, undefined, status);
+        }
+        
+        function handleMediaCommand(data) {
+            try {
+                console.log('[Audio] Media command:', data.type);
+                
+                switch (data.type) {
+                    case 'LOAD':
+                        handleMediaLoad(data);
+                        break;
+                    case 'PLAY':
+                        audioPlayer.play();
+                        sendMediaStatus(data.requestId, 'PLAYING');
+                        break;
+                    case 'PAUSE':
+                        audioPlayer.pause();
+                        sendMediaStatus(data.requestId, 'PAUSED');
+                        break;
+                    case 'STOP':
+                        audioPlayer.pause();
+                        audioPlayer.currentTime = 0;
+                        sendMediaStatus(data.requestId, 'IDLE');
+                        break;
+                    case 'GET_STATUS':
+                        sendMediaStatus(data.requestId, audioPlayer.paused ? 'PAUSED' : 'PLAYING');
+                        break;
+                    default:
+                        console.log('[Audio] Unknown command:', data.type);
+                }
+            } catch (error) {
+                console.error('[Audio] Command error:', error);
+            }
+        }
+        
+        // ==================== WEBRTC VIDEO STREAMING ====================
+        
         const rtcConfig = {
             iceServers: [
                 { urls: 'stun:stun.l.google.com:19302' },
@@ -72,7 +225,11 @@
             updateStatus('Creating peer connection...');
             peerConnection = new RTCPeerConnection(rtcConfig);
             
-            // Handle incoming tracks
+            // Switch to video mode
+            currentMode = 'video';
+            audioVisualizer.style.display = 'none';
+            remoteVideo.style.display = 'block';
+            
             peerConnection.ontrack = (event) => {
                 updateStatus('Received video track');
                 console.log('[WebRTC] Track received:', event.track.kind);
@@ -88,7 +245,6 @@
                 }
             };
             
-            // Handle ICE candidates
             peerConnection.onicecandidate = (event) => {
                 if (event.candidate) {
                     console.log('[WebRTC] Generated ICE candidate');
@@ -98,11 +254,10 @@
                         sdpMid: event.candidate.sdpMid,
                         sdpMLineIndex: event.candidate.sdpMLineIndex
                     };
-                    sendMessage(message);
+                    sendWebRTCMessage(message);
                 }
             };
             
-            // Connection state changes
             peerConnection.onconnectionstatechange = () => {
                 console.log('[WebRTC] Connection state:', peerConnection.connectionState);
                 updateStatus('Connection: ' + peerConnection.connectionState);
@@ -113,23 +268,11 @@
                     updateStatus('❌ Connection failed');
                 }
             };
-            
-            peerConnection.oniceconnectionstatechange = () => {
-                console.log('[WebRTC] ICE connection state:', peerConnection.iceConnectionState);
-            };
         }
         
-        function sendMessage(message) {
-            if (!castContext) {
-                console.error('[Cast] Context not initialized');
-                return;
-            }
-            
-            const jsonMessage = JSON.stringify(message);
-            console.log('[Cast] Sending message:', message.type, 'to senderId:', event?.senderId || 'broadcast');
-            
-            // Send to all connected senders
-            castContext.sendCustomMessage(WEBRTC_NAMESPACE, undefined, jsonMessage);
+        function sendWebRTCMessage(message) {
+            if (!castContext) return;
+            castContext.sendCustomMessage(WEBRTC_NAMESPACE, undefined, message);
         }
         
         async function handleOffer(data) {
@@ -139,7 +282,6 @@
                 
                 initializePeerConnection();
                 
-                // Set remote description
                 const offer = new RTCSessionDescription({
                     type: 'offer',
                     sdp: data.sdp
@@ -148,17 +290,15 @@
                 await peerConnection.setRemoteDescription(offer);
                 console.log('[WebRTC] Remote description set');
                 
-                // Create answer
                 const answer = await peerConnection.createAnswer();
                 await peerConnection.setLocalDescription(answer);
                 console.log('[WebRTC] Local description set');
                 
-                // Send answer back
                 const answerMessage = {
                     type: 'answer',
                     sdp: answer.sdp
                 };
-                sendMessage(answerMessage);
+                sendWebRTCMessage(answerMessage);
                 updateStatus('Answer sent, establishing connection...');
                 
             } catch (error) {
@@ -188,25 +328,18 @@
             }
         }
         
-        function handleCustomMessage(event) {
+        function handleWebRTCMessage(event) {
             try {
                 messageCount++;
-                updateStatus(`📨 Message #${messageCount} received`);
                 
-                console.log('[Cast] Received raw message from sender:', event.senderId);
-                console.log('[Cast] Message data type:', typeof event.data);
-                console.log('[Cast] Message data:', event.data);
-                
-                // Cast SDK may auto-parse JSON, so handle both object and string
                 let data;
                 if (typeof event.data === 'string') {
                     data = JSON.parse(event.data);
                 } else {
-                    data = event.data;  // Already an object
+                    data = event.data;
                 }
                 
-                console.log('[Cast] Parsed message type:', data.type);
-                updateStatus(`Processing ${data.type}...`);
+                console.log('[WebRTC] Message type:', data.type);
                 
                 switch (data.type) {
                     case 'offer':
@@ -216,46 +349,55 @@
                         handleIceCandidate(data);
                         break;
                     default:
-                        console.log('[Cast] Unknown message type:', data.type);
-                        updateStatus(`❓ Unknown: ${data.type}`);
+                        console.log('[WebRTC] Unknown message type:', data.type);
                 }
             } catch (error) {
-                console.error('[Cast] Error parsing message:', error);
-                console.error('[Cast] Raw data:', event.data);
-                console.error('[Cast] Data type:', typeof event.data);
-                updateStatus(`❌ Parse error: ${error.message}`);
+                console.error('[WebRTC] Error parsing message:', error);
             }
         }
         
-        // Initialize Cast Receiver
+        // ==================== CAST RECEIVER INITIALIZATION ====================
+        
         window.addEventListener('load', () => {
             updateStatus('Initializing Cast Receiver...');
             
             const context = cast.framework.CastReceiverContext.getInstance();
             castContext = context;
             
-            // Add sender connected/disconnected handlers
             context.addEventListener(cast.framework.system.EventType.SENDER_CONNECTED, () => {
                 console.log('[Cast] Sender connected');
-                updateStatus('📱 Sender connected - Ready for WebRTC');
+                updateStatus('📱 Sender connected - Ready');
             });
             
             context.addEventListener(cast.framework.system.EventType.SENDER_DISCONNECTED, () => {
                 console.log('[Cast] Sender disconnected');
                 updateStatus('Sender disconnected');
+                
+                // Clean up
+                if (audioPlayer.src) {
+                    audioPlayer.pause();
+                    audioPlayer.src = '';
+                }
+                if (peerConnection) {
+                    peerConnection.close();
+                    peerConnection = null;
+                }
+                currentMode = null;
             });
             
-            // Set up custom message handling
-            context.addCustomMessageListener(WEBRTC_NAMESPACE, handleCustomMessage);
+            // Listen for WebRTC messages
+            context.addCustomMessageListener(WEBRTC_NAMESPACE, handleWebRTCMessage);
             console.log('[Cast] Listening on namespace:', WEBRTC_NAMESPACE);
             
-            // Optional: Configure receiver options
+            // Listen for Media messages (for audio)
+            context.addCustomMessageListener(MEDIA_NAMESPACE, handleMediaCommand);
+            console.log('[Cast] Listening on namespace:', MEDIA_NAMESPACE);
+            
             const options = new cast.framework.CastReceiverOptions();
             options.disableIdleTimeout = true;
             
-            // Start the receiver
             context.start(options);
-            updateStatus('✅ Ready for WebRTC connection');
+            updateStatus('✅ Ready for Audio or Video');
             console.log('[Cast] Receiver started and ready');
         });
     </script>
