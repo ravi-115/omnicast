@@ -333,13 +333,6 @@
                 
                 if (peerConnection.connectionState === 'connected') {
                     updateStatus('🎥 Connected - Streaming');
-                    // Safety net: ensure video is playing on Chromecast's browser
-                    if (remoteVideo.srcObject) {
-                        remoteVideo.style.display = 'block';
-                        remoteVideo.play().catch(e => {
-                            console.warn('[WebRTC] Retry play() error:', e);
-                        });
-                    }
                 } else if (peerConnection.connectionState === 'failed') {
                     updateStatus('❌ Connection failed');
                 }
