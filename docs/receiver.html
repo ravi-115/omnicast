@@ -283,17 +283,34 @@
             remoteVideo.style.display = 'block';
             
             peerConnection.ontrack = (event) => {
-                updateStatus('Received video track');
                 console.log('[WebRTC] Track received:', event.track.kind);
                 
-                if (event.streams && event.streams[0]) {
-                    remoteVideo.srcObject = event.streams[0];
-                    updateStatus('Streaming video');
-                } else {
-                    const stream = new MediaStream();
-                    stream.addTrack(event.track);
-                    remoteVideo.srcObject = stream;
-                    updateStatus('Streaming video');
+                if (event.track.kind === 'video') {
+                    updateStatus('Received video track');
+                    if (event.streams && event.streams[0]) {
+                        remoteVideo.srcObject = event.streams[0];
+                    } else {
+                        let stream = remoteVideo.srcObject;
+                        if (!stream || !(stream instanceof MediaStream)) {
+                            stream = new MediaStream();
+                            remoteVideo.srcObject = stream;
+                        }
+                        stream.addTrack(event.track);
+                    }
+                    remoteVideo.style.display = 'block';
+                    remoteVideo.play().then(() => {
+                        console.log('[WebRTC] Video play() succeeded');
+                        updateStatus('🎥 Streaming video');
+                    }).catch(e => {
+                        console.warn('[WebRTC] Video play() error:', e);
+                    });
+                } else if (event.track.kind === 'audio') {
+                    console.log('[WebRTC] Audio track received');
+                    // Audio is carried on the same peer connection;
+                    // assign to the video element so it plays together.
+                    if (remoteVideo.srcObject) {
+                        remoteVideo.srcObject.addTrack(event.track);
+                    }
                 }
             };
             
@@ -316,6 +333,13 @@
                 
                 if (peerConnection.connectionState === 'connected') {
                     updateStatus('🎥 Connected - Streaming');
+                    // Safety net: ensure video is playing on Chromecast's browser
+                    if (remoteVideo.srcObject) {
+                        remoteVideo.style.display = 'block';
+                        remoteVideo.play().catch(e => {
+                            console.warn('[WebRTC] Retry play() error:', e);
+                        });
+                    }
                 } else if (peerConnection.connectionState === 'failed') {
                     updateStatus('❌ Connection failed');
                 }
