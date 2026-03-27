@@ -5,10 +5,6 @@
     <title>OmniCast Audio+Video Receiver</title>
     <script src="//www.gstatic.com/cast/sdk/libs/caf_receiver/v3/cast_receiver_framework.js"></script>
     <style>
-        html, body {
-            width: 100%;
-            height: 100%;
-        }
         body {
             margin: 0;
             padding: 0;
@@ -16,16 +12,14 @@
             background-color: #000;
         }
         #remoteVideo {
-            position: fixed;
-            top: 0;
-            left: 0;
+            position: absolute;
+            top: 50%;
+            left: 50%;
             width: 100vw;
             height: 100vh;
-            max-width: 100vw;
-            max-height: 100vh;
             object-fit: contain;
-            object-position: center center;
-            transform: none !important;
+            transform: translate(-50%, -50%);
+            transform-origin: center center;
             display: none;
         }
         #audioPlayer {
@@ -88,29 +82,6 @@
         const audioVisualizer = document.getElementById('audioVisualizer');
         let messageCount = 0;
         let currentMode = null; // 'audio' or 'video'
-
-        function applyFitMode(videoElement) {
-            const params = new URLSearchParams(window.location.search);
-            const requested = (params.get('fit') || '').toLowerCase();
-            const fitMode = requested === 'cover' ? 'cover' : 'contain';
-            videoElement.style.objectFit = fitMode;
-            videoElement.style.objectPosition = 'center center';
-            videoElement.style.transform = 'none';
-            console.log('[OmniCast Receiver] Video fit mode:', fitMode);
-        }
-
-        applyFitMode(remoteVideo);
-
-        remoteVideo.addEventListener('loadedmetadata', () => {
-            const computed = window.getComputedStyle(remoteVideo);
-            console.log('[OmniCast Receiver] video metadata', {
-                videoWidth: remoteVideo.videoWidth,
-                videoHeight: remoteVideo.videoHeight,
-                objectFit: computed.objectFit,
-                transform: computed.transform
-            });
-            applyFitMode(remoteVideo);
-        });
         
         function updateStatus(message) {
             console.log('[OmniCast Receiver]', message);
@@ -122,6 +93,35 @@
                 setTimeout(() => {
                     statusDiv.style.opacity = '0';
                 }, 3000);
+            }
+        }
+
+        function applyVideoLayout() {
+            if (!remoteVideo) return;
+
+            const videoW = remoteVideo.videoWidth || 0;
+            const videoH = remoteVideo.videoHeight || 0;
+            const screenW = window.innerWidth;
+            const screenH = window.innerHeight;
+
+            // Default: fill while preserving aspect as much as possible.
+            remoteVideo.style.objectFit = 'cover';
+            remoteVideo.style.width = '100vw';
+            remoteVideo.style.height = '100vh';
+            remoteVideo.style.transform = 'translate(-50%, -50%)';
+
+            // If the incoming stream remains portrait on a landscape TV,
+            // rotate for full-screen viewing continuity.
+            const isLandscapeScreen = screenW > screenH;
+            const isPortraitVideo = videoW > 0 && videoH > 0 && videoH > videoW;
+
+            if (isLandscapeScreen && isPortraitVideo) {
+                remoteVideo.style.width = '100vh';
+                remoteVideo.style.height = '100vw';
+                remoteVideo.style.transform = 'translate(-50%, -50%) rotate(90deg)';
+                console.log('[ReceiverLayout] Applied rotated fullscreen layout video=' + videoW + 'x' + videoH + ' screen=' + screenW + 'x' + screenH);
+            } else {
+                console.log('[ReceiverLayout] Applied standard fullscreen layout video=' + videoW + 'x' + videoH + ' screen=' + screenW + 'x' + screenH);
             }
         }
         
@@ -329,6 +329,13 @@
                     remoteVideo.srcObject = stream;
                     updateStatus('Streaming video');
                 }
+
+                remoteVideo.onloadedmetadata = () => {
+                    applyVideoLayout();
+                };
+                remoteVideo.onresize = () => {
+                    applyVideoLayout();
+                };
             };
             
             peerConnection.onicecandidate = (event) => {
@@ -446,6 +453,10 @@
         
         window.addEventListener('load', () => {
             updateStatus('Initializing Cast Receiver...');
+
+            window.addEventListener('resize', () => {
+                applyVideoLayout();
+            });
             
             const context = cast.framework.CastReceiverContext.getInstance();
             castContext = context;
