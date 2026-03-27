@@ -5,6 +5,10 @@
     <title>OmniCast Audio+Video Receiver</title>
     <script src="//www.gstatic.com/cast/sdk/libs/caf_receiver/v3/cast_receiver_framework.js"></script>
     <style>
+        html, body {
+            width: 100%;
+            height: 100%;
+        }
         body {
             margin: 0;
             padding: 0;
@@ -14,7 +18,7 @@
         #remoteVideo {
             width: 100vw;
             height: 100vh;
-            object-fit: contain;
+            object-fit: cover;
             display: none;
         }
         #audioPlayer {
@@ -77,6 +81,16 @@
         const audioVisualizer = document.getElementById('audioVisualizer');
         let messageCount = 0;
         let currentMode = null; // 'audio' or 'video'
+
+        function applyFitMode(videoElement) {
+            const params = new URLSearchParams(window.location.search);
+            const requested = (params.get('fit') || '').toLowerCase();
+            const fitMode = requested === 'contain' ? 'contain' : 'cover';
+            videoElement.style.objectFit = fitMode;
+            console.log('[OmniCast Receiver] Video fit mode:', fitMode);
+        }
+
+        applyFitMode(remoteVideo);
         
         function updateStatus(message) {
             console.log('[OmniCast Receiver]', message);
@@ -283,34 +297,17 @@
             remoteVideo.style.display = 'block';
             
             peerConnection.ontrack = (event) => {
+                updateStatus('Received video track');
                 console.log('[WebRTC] Track received:', event.track.kind);
                 
-                if (event.track.kind === 'video') {
-                    updateStatus('Received video track');
-                    if (event.streams && event.streams[0]) {
-                        remoteVideo.srcObject = event.streams[0];
-                    } else {
-                        let stream = remoteVideo.srcObject;
-                        if (!stream || !(stream instanceof MediaStream)) {
-                            stream = new MediaStream();
-                            remoteVideo.srcObject = stream;
-                        }
-                        stream.addTrack(event.track);
-                    }
-                    remoteVideo.style.display = 'block';
-                    remoteVideo.play().then(() => {
-                        console.log('[WebRTC] Video play() succeeded');
-                        updateStatus('🎥 Streaming video');
-                    }).catch(e => {
-                        console.warn('[WebRTC] Video play() error:', e);
-                    });
-                } else if (event.track.kind === 'audio') {
-                    console.log('[WebRTC] Audio track received');
-                    // Audio is carried on the same peer connection;
-                    // assign to the video element so it plays together.
-                    if (remoteVideo.srcObject) {
-                        remoteVideo.srcObject.addTrack(event.track);
-                    }
+                if (event.streams && event.streams[0]) {
+                    remoteVideo.srcObject = event.streams[0];
+                    updateStatus('Streaming video');
+                } else {
+                    const stream = new MediaStream();
+                    stream.addTrack(event.track);
+                    remoteVideo.srcObject = stream;
+                    updateStatus('Streaming video');
                 }
             };
             
@@ -333,13 +330,6 @@
                 
                 if (peerConnection.connectionState === 'connected') {
                     updateStatus('🎥 Connected - Streaming');
-                    // Safety net: ensure video is playing on Chromecast's browser
-                    if (remoteVideo.srcObject) {
-                        remoteVideo.style.display = 'block';
-                        remoteVideo.play().catch(e => {
-                            console.warn('[WebRTC] Retry play() error:', e);
-                        });
-                    }
                 } else if (peerConnection.connectionState === 'failed') {
                     updateStatus('❌ Connection failed');
                 }
