@@ -18,7 +18,7 @@
         #remoteVideo {
             width: 100vw;
             height: 100vh;
-            object-fit: cover;
+            object-fit: contain;
             display: none;
         }
         #audioPlayer {
@@ -85,7 +85,7 @@
         function applyFitMode(videoElement) {
             const params = new URLSearchParams(window.location.search);
             const requested = (params.get('fit') || '').toLowerCase();
-            const fitMode = requested === 'contain' ? 'contain' : 'cover';
+            const fitMode = requested === 'cover' ? 'cover' : 'contain';
             videoElement.style.objectFit = fitMode;
             console.log('[OmniCast Receiver] Video fit mode:', fitMode);
         }
