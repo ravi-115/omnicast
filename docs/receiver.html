@@ -82,6 +82,7 @@
         const audioVisualizer = document.getElementById('audioVisualizer');
         let messageCount = 0;
         let currentMode = null; // 'audio' or 'video'
+        let forcedRotationDeg = 0;
         
         function updateStatus(message) {
             console.log('[OmniCast Receiver]', message);
@@ -104,25 +105,24 @@
             const screenW = window.innerWidth;
             const screenH = window.innerHeight;
 
-            // Default: fill while preserving aspect as much as possible.
-            remoteVideo.style.objectFit = 'cover';
+            // Default production behavior: preserve full image with black bars.
+            remoteVideo.style.objectFit = 'contain';
             remoteVideo.style.width = '100vw';
             remoteVideo.style.height = '100vh';
-            remoteVideo.style.transform = 'translate(-50%, -50%)';
+            remoteVideo.style.transform = 'translate(-50%, -50%) rotate(' + forcedRotationDeg + 'deg)';
+            console.log('[ReceiverLayout] Applied contain layout video=' + videoW + 'x' + videoH + ' screen=' + screenW + 'x' + screenH + ' rotation=' + forcedRotationDeg + 'deg');
+        }
 
-            // If the incoming stream remains portrait on a landscape TV,
-            // rotate for full-screen viewing continuity.
-            const isLandscapeScreen = screenW > screenH;
-            const isPortraitVideo = videoW > 0 && videoH > 0 && videoH > videoW;
-
-            if (isLandscapeScreen && isPortraitVideo) {
-                remoteVideo.style.width = '100vh';
-                remoteVideo.style.height = '100vw';
-                remoteVideo.style.transform = 'translate(-50%, -50%) rotate(90deg)';
-                console.log('[ReceiverLayout] Applied rotated fullscreen layout video=' + videoW + 'x' + videoH + ' screen=' + screenW + 'x' + screenH);
+        function applyOrientationMessage(value) {
+            // iOS/ReplayKit orientation attachment values:
+            // 1 = portrait, 3 = portrait upside-down, 6 = landscape-left, 8 = landscape-right
+            if (value === 8) {
+                forcedRotationDeg = 180;
             } else {
-                console.log('[ReceiverLayout] Applied standard fullscreen layout video=' + videoW + 'x' + videoH + ' screen=' + screenW + 'x' + screenH);
+                forcedRotationDeg = 0;
             }
+            console.log('[ReceiverLayout] Orientation message value=' + value + ' -> forcedRotation=' + forcedRotationDeg + 'deg');
+            applyVideoLayout();
         }
         
         // ==================== AUDIO STREAMING ====================
@@ -440,6 +440,9 @@
                         break;
                     case 'iceCandidate':
                         handleIceCandidate(data);
+                        break;
+                    case 'orientation':
+                        applyOrientationMessage(data.value);
                         break;
                     default:
                         console.log('[WebRTC] Unknown message type:', data.type);
