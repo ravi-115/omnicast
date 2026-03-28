@@ -82,7 +82,7 @@
         const audioVisualizer = document.getElementById('audioVisualizer');
         let messageCount = 0;
         let currentMode = null; // 'audio' or 'video'
-        let forcedRotationDeg = 0;
+        let orientationValue = 1;
         
         function updateStatus(message) {
             console.log('[OmniCast Receiver]', message);
@@ -104,39 +104,33 @@
             const videoH = remoteVideo.videoHeight || 0;
             const screenW = window.innerWidth;
             const screenH = window.innerHeight;
+            const isLandscapeDisplay = screenW > screenH;
+            const isPortraitEncoded = videoW > 0 && videoH > 0 && videoH > videoW;
+
+            // Chromecast/WebRTC can already apply CVO orientation metadata.
+            // Manual rotation should be applied only when stream remains portrait-coded
+            // on a landscape display, otherwise we risk double-rotation (upside-down).
+            let effectiveRotationDeg = 0;
+            if ((orientationValue === 6 || orientationValue === 8) && isLandscapeDisplay && isPortraitEncoded) {
+                effectiveRotationDeg = orientationValue === 6 ? -90 : 90;
+            } else if (orientationValue === 3) {
+                effectiveRotationDeg = 180;
+            }
 
             // Default production behavior: preserve full image with black bars.
             remoteVideo.style.objectFit = 'contain';
-            const rightAngle = Math.abs(forcedRotationDeg) === 90;
+            const rightAngle = Math.abs(effectiveRotationDeg) === 90;
             remoteVideo.style.width = rightAngle ? '100vh' : '100vw';
             remoteVideo.style.height = rightAngle ? '100vw' : '100vh';
-            remoteVideo.style.transform = 'translate(-50%, -50%) rotate(' + forcedRotationDeg + 'deg)';
-            console.log('[ReceiverLayout] Applied contain layout video=' + videoW + 'x' + videoH + ' screen=' + screenW + 'x' + screenH + ' rotation=' + forcedRotationDeg + 'deg');
+            remoteVideo.style.transform = 'translate(-50%, -50%) rotate(' + effectiveRotationDeg + 'deg)';
+            console.log('[ReceiverLayout] Applied contain layout video=' + videoW + 'x' + videoH + ' screen=' + screenW + 'x' + screenH + ' orientation=' + orientationValue + ' rotation=' + effectiveRotationDeg + 'deg portraitEncoded=' + isPortraitEncoded);
         }
 
         function applyOrientationMessage(value) {
             // iOS/ReplayKit orientation attachment values:
             // 1 = portrait, 3 = portrait upside-down, 6 = landscape-left, 8 = landscape-right
-            switch (value) {
-                case 6:
-                    // Landscape-left
-                    forcedRotationDeg = -90;
-                    break;
-                case 8:
-                    // Landscape-right
-                    forcedRotationDeg = 90;
-                    break;
-                case 3:
-                    // Portrait upside-down
-                    forcedRotationDeg = 180;
-                    break;
-                case 1:
-                default:
-                    // Portrait
-                    forcedRotationDeg = 0;
-                    break;
-            }
-            console.log('[ReceiverLayout] Orientation message value=' + value + ' -> forcedRotation=' + forcedRotationDeg + 'deg');
+            orientationValue = Number(value) || 1;
+            console.log('[ReceiverLayout] Orientation message value=' + orientationValue);
             applyVideoLayout();
         }
         
