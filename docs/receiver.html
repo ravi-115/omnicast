@@ -87,6 +87,10 @@
         let lastRenderedFrameAtMs = 0;
         let lastRenderedFrameCount = 0;
         let suppressVideoStateEvents = false;
+        let activeVideoStream = null;
+        let lastPlaybackRetryAtMs = 0;
+        let lastKeyframeRecoveryAtMs = 0;
+        let lastVideoElementResetAtMs = 0;
         
         function updateStatus(message) {
             console.log('[OmniCast Receiver]', message);
@@ -101,6 +105,52 @@
             }
         }
 
+        function requestVideoRecovery(reason, options = {}) {
+            if (currentMode !== 'video') return;
+
+            const now = Date.now();
+            const {
+                forceElementReset = false,
+                requestKeyframe = true,
+                retryPlayback = true
+            } = options;
+
+            console.warn(`[ReceiverAVVideo] recovery reason=${reason} paused=${remoteVideo.paused} readyState=${remoteVideo.readyState} currentTime=${remoteVideo.currentTime.toFixed(3)}`);
+
+            if (retryPlayback && now - lastPlaybackRetryAtMs >= 500) {
+                lastPlaybackRetryAtMs = now;
+                if (!remoteVideo.srcObject && activeVideoStream) {
+                    remoteVideo.srcObject = activeVideoStream;
+                }
+                remoteVideo.play().catch((error) => {
+                    console.warn('[ReceiverAVVideo] recovery play() failed:', error);
+                });
+            }
+
+            if (requestKeyframe && now - lastKeyframeRecoveryAtMs >= 800) {
+                lastKeyframeRecoveryAtMs = now;
+                sendWebRTCMessage({
+                    type: 'requestKeyFrame',
+                    reason
+                });
+            }
+
+            if (forceElementReset && activeVideoStream && now - lastVideoElementResetAtMs >= 2500) {
+                lastVideoElementResetAtMs = now;
+                const stream = activeVideoStream;
+                runWithSuppressedVideoStateEvents(() => {
+                    remoteVideo.pause();
+                    remoteVideo.srcObject = null;
+                });
+                setTimeout(() => {
+                    remoteVideo.srcObject = stream;
+                    remoteVideo.play().catch((error) => {
+                        console.warn('[ReceiverAVVideo] element reset play() failed:', error);
+                    });
+                }, 0);
+            }
+        }
+
         function startVideoTelemetry(video, label) {
             if (videoTelemetryStarted) return;
             videoTelemetryStarted = true;
@@ -110,10 +160,16 @@
                     console.log(`[${label}] event=${eventName} paused=${video.paused} readyState=${video.readyState} currentTime=${video.currentTime.toFixed(3)}`);
                     if (currentMode !== 'video' || suppressVideoStateEvents) return;
                     if (eventName === 'playing' || eventName === 'play') {
+                        lastRenderedFrameAtMs = Date.now();
                         sendMediaStatus(0, 'PLAYING');
                     } else if (eventName === 'pause') {
                         sendMediaStatus(0, 'PAUSED');
+                    } else if (eventName === 'waiting' || eventName === 'stalled') {
+                        requestVideoRecovery(`video_event_${eventName}`);
                     } else if (eventName === 'ended' || eventName === 'error') {
+                        requestVideoRecovery(`video_event_${eventName}`, {
+                            forceElementReset: eventName === 'error'
+                        });
                         sendMediaStatus(0, 'IDLE');
                     }
                 });
@@ -140,7 +196,11 @@
                 }
                 const now = Date.now();
                 if (!video.paused && video.readyState >= 2 && lastRenderedFrameAtMs > 0 && now - lastRenderedFrameAtMs >= 1500) {
-                    console.warn(`[${label}] render-stall gapMs=${now - lastRenderedFrameAtMs} currentTime=${video.currentTime.toFixed(3)}`);
+                    const gapMs = now - lastRenderedFrameAtMs;
+                    console.warn(`[${label}] render-stall gapMs=${gapMs} currentTime=${video.currentTime.toFixed(3)}`);
+                    requestVideoRecovery('render_stall', {
+                        forceElementReset: gapMs >= 3000
+                    });
                 }
             }, 1000);
 
@@ -393,6 +453,7 @@
                                 remoteVideo.pause();
                                 remoteVideo.srcObject = null;
                             });
+                            activeVideoStream = null;
                             if (peerConnection) {
                                 try { peerConnection.close(); } catch (_) {}
                                 peerConnection = null;
@@ -447,6 +508,7 @@
             
             // Switch to video mode
             currentMode = 'video';
+            activeVideoStream = null;
             audioPlayer.pause();
             audioPlayer.currentTime = 0;
             audioPlayer.src = '';
@@ -464,11 +526,13 @@
                 console.log('[WebRTC] Track received:', event.track.kind);
                 
                 if (event.streams && event.streams[0]) {
+                    activeVideoStream = event.streams[0];
                     remoteVideo.srcObject = event.streams[0];
                     updateStatus('Streaming video');
                 } else {
                     const stream = new MediaStream();
                     stream.addTrack(event.track);
+                    activeVideoStream = stream;
                     remoteVideo.srcObject = stream;
                     updateStatus('Streaming video');
                 }
@@ -628,6 +692,7 @@
                 }
                 remoteVideo.pause();
                 remoteVideo.srcObject = null;
+                activeVideoStream = null;
                 if (peerConnection) {
                     peerConnection.close();
                     peerConnection = null;
