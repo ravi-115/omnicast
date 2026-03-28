@@ -85,6 +85,8 @@
         let orientationValue = 1;
         let videoTelemetryStarted = false;
         let lastRenderedFrameAtMs = 0;
+        let lastRenderedFrameCount = 0;
+        let suppressVideoStateEvents = false;
         
         function updateStatus(message) {
             console.log('[OmniCast Receiver]', message);
@@ -106,10 +108,36 @@
             ['play', 'playing', 'pause', 'waiting', 'stalled', 'ended', 'error'].forEach((eventName) => {
                 video.addEventListener(eventName, () => {
                     console.log(`[${label}] event=${eventName} paused=${video.paused} readyState=${video.readyState} currentTime=${video.currentTime.toFixed(3)}`);
+                    if (currentMode !== 'video' || suppressVideoStateEvents) return;
+                    if (eventName === 'playing' || eventName === 'play') {
+                        sendMediaStatus(0, 'PLAYING');
+                    } else if (eventName === 'pause') {
+                        sendMediaStatus(0, 'PAUSED');
+                    } else if (eventName === 'ended' || eventName === 'error') {
+                        sendMediaStatus(0, 'IDLE');
+                    }
                 });
             });
 
             setInterval(() => {
+                if (typeof video.requestVideoFrameCallback !== 'function') {
+                    const quality = typeof video.getVideoPlaybackQuality === 'function'
+                        ? video.getVideoPlaybackQuality()
+                        : null;
+                    const renderedFrames =
+                        quality && Number.isFinite(quality.totalVideoFrames)
+                            ? quality.totalVideoFrames
+                            : (typeof video.webkitDecodedFrameCount === 'number'
+                                ? video.webkitDecodedFrameCount
+                                : 0);
+                    if (renderedFrames > lastRenderedFrameCount) {
+                        lastRenderedFrameCount = renderedFrames;
+                        lastRenderedFrameAtMs = Date.now();
+                        if (renderedFrames === 1 || renderedFrames % 60 === 0) {
+                            console.log(`[${label}] rendered renderedFrames=${renderedFrames} currentTime=${video.currentTime.toFixed(3)}`);
+                        }
+                    }
+                }
                 const now = Date.now();
                 if (!video.paused && video.readyState >= 2 && lastRenderedFrameAtMs > 0 && now - lastRenderedFrameAtMs >= 1500) {
                     console.warn(`[${label}] render-stall gapMs=${now - lastRenderedFrameAtMs} currentTime=${video.currentTime.toFixed(3)}`);
@@ -125,6 +153,17 @@
                     video.requestVideoFrameCallback(onFrame);
                 };
                 video.requestVideoFrameCallback(onFrame);
+            }
+        }
+
+        function runWithSuppressedVideoStateEvents(work) {
+            suppressVideoStateEvents = true;
+            try {
+                work();
+            } finally {
+                setTimeout(() => {
+                    suppressVideoStateEvents = false;
+                }, 0);
             }
         }
 
@@ -192,6 +231,16 @@
                 
                 // Switch to audio mode
                 currentMode = 'audio';
+                if (peerConnection) {
+                    try { peerConnection.close(); } catch (_) {}
+                    peerConnection = null;
+                }
+                runWithSuppressedVideoStateEvents(() => {
+                    remoteVideo.pause();
+                    remoteVideo.srcObject = null;
+                });
+                lastRenderedFrameAtMs = 0;
+                lastRenderedFrameCount = 0;
                 remoteVideo.style.display = 'none';
                 audioVisualizer.style.display = 'block';
                 
@@ -260,14 +309,17 @@
         function sendMediaStatus(requestId, playerState) {
             if (!castContext) return;
 
-            const activeElement = currentMode === 'video' ? remoteVideo : audioPlayer;
-            const currentTime = Number.isFinite(activeElement.currentTime) ? activeElement.currentTime : 0;
+            const activeElement =
+                currentMode === 'video' ? remoteVideo :
+                currentMode === 'audio' ? audioPlayer :
+                null;
+            const currentTime = activeElement && Number.isFinite(activeElement.currentTime) ? activeElement.currentTime : 0;
             const volumeLevel =
-                typeof activeElement.volume === 'number' && Number.isFinite(activeElement.volume)
+                activeElement && typeof activeElement.volume === 'number' && Number.isFinite(activeElement.volume)
                     ? activeElement.volume
                     : 1;
             const muted =
-                typeof activeElement.muted === 'boolean'
+                activeElement && typeof activeElement.muted === 'boolean'
                     ? activeElement.muted
                     : false;
             
@@ -337,8 +389,16 @@
                     case 'STOP':
                         console.log('[Audio] STOP command');
                         if (currentMode === 'video') {
-                            remoteVideo.pause();
-                            remoteVideo.srcObject = null;
+                            runWithSuppressedVideoStateEvents(() => {
+                                remoteVideo.pause();
+                                remoteVideo.srcObject = null;
+                            });
+                            if (peerConnection) {
+                                try { peerConnection.close(); } catch (_) {}
+                                peerConnection = null;
+                            }
+                            lastRenderedFrameAtMs = 0;
+                            lastRenderedFrameCount = 0;
                         } else {
                             audioPlayer.pause();
                             audioPlayer.currentTime = 0;
@@ -387,6 +447,15 @@
             
             // Switch to video mode
             currentMode = 'video';
+            audioPlayer.pause();
+            audioPlayer.currentTime = 0;
+            audioPlayer.src = '';
+            runWithSuppressedVideoStateEvents(() => {
+                remoteVideo.pause();
+                remoteVideo.srcObject = null;
+            });
+            lastRenderedFrameAtMs = 0;
+            lastRenderedFrameCount = 0;
             audioVisualizer.style.display = 'none';
             remoteVideo.style.display = 'block';
             
@@ -405,6 +474,7 @@
                 }
                 remoteVideo.play().catch((error) => {
                     console.warn('[WebRTC] remoteVideo.play() failed:', error);
+                    sendMediaStatus(0, 'PAUSED');
                 });
                 startVideoTelemetry(remoteVideo, 'ReceiverAVVideo');
 
@@ -556,10 +626,14 @@
                     audioPlayer.pause();
                     audioPlayer.src = '';
                 }
+                remoteVideo.pause();
+                remoteVideo.srcObject = null;
                 if (peerConnection) {
                     peerConnection.close();
                     peerConnection = null;
                 }
+                lastRenderedFrameAtMs = 0;
+                lastRenderedFrameCount = 0;
                 currentMode = null;
             });
             
