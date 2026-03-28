@@ -338,6 +338,9 @@
                     remoteVideo.srcObject = stream;
                     updateStatus('Streaming video');
                 }
+                remoteVideo.play().catch((error) => {
+                    console.warn('[WebRTC] remoteVideo.play() failed:', error);
+                });
 
                 remoteVideo.onloadedmetadata = () => {
                     applyVideoLayout();
