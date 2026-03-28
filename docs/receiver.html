@@ -83,6 +83,8 @@
         let messageCount = 0;
         let currentMode = null; // 'audio' or 'video'
         let orientationValue = 1;
+        let videoTelemetryStarted = false;
+        let lastRenderedFrameAtMs = 0;
         
         function updateStatus(message) {
             console.log('[OmniCast Receiver]', message);
@@ -94,6 +96,35 @@
                 setTimeout(() => {
                     statusDiv.style.opacity = '0';
                 }, 3000);
+            }
+        }
+
+        function startVideoTelemetry(video, label) {
+            if (videoTelemetryStarted) return;
+            videoTelemetryStarted = true;
+
+            ['play', 'playing', 'pause', 'waiting', 'stalled', 'ended', 'error'].forEach((eventName) => {
+                video.addEventListener(eventName, () => {
+                    console.log(`[${label}] event=${eventName} paused=${video.paused} readyState=${video.readyState} currentTime=${video.currentTime.toFixed(3)}`);
+                });
+            });
+
+            setInterval(() => {
+                const now = Date.now();
+                if (!video.paused && video.readyState >= 2 && lastRenderedFrameAtMs > 0 && now - lastRenderedFrameAtMs >= 1500) {
+                    console.warn(`[${label}] render-stall gapMs=${now - lastRenderedFrameAtMs} currentTime=${video.currentTime.toFixed(3)}`);
+                }
+            }, 1000);
+
+            if (typeof video.requestVideoFrameCallback === 'function') {
+                const onFrame = (_, metadata) => {
+                    lastRenderedFrameAtMs = Date.now();
+                    if (metadata.presentedFrames === 1 || metadata.presentedFrames % 60 === 0) {
+                        console.log(`[${label}] rendered presentedFrames=${metadata.presentedFrames} mediaTime=${metadata.mediaTime?.toFixed?.(3) ?? 'n/a'}`);
+                    }
+                    video.requestVideoFrameCallback(onFrame);
+                };
+                video.requestVideoFrameCallback(onFrame);
             }
         }
 
@@ -341,6 +372,7 @@
                 remoteVideo.play().catch((error) => {
                     console.warn('[WebRTC] remoteVideo.play() failed:', error);
                 });
+                startVideoTelemetry(remoteVideo, 'ReceiverAVVideo');
 
                 remoteVideo.onloadedmetadata = () => {
                     applyVideoLayout();
