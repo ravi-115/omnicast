@@ -107,8 +107,9 @@
 
             // Default production behavior: preserve full image with black bars.
             remoteVideo.style.objectFit = 'contain';
-            remoteVideo.style.width = '100vw';
-            remoteVideo.style.height = '100vh';
+            const rightAngle = Math.abs(forcedRotationDeg) === 90;
+            remoteVideo.style.width = rightAngle ? '100vh' : '100vw';
+            remoteVideo.style.height = rightAngle ? '100vw' : '100vh';
             remoteVideo.style.transform = 'translate(-50%, -50%) rotate(' + forcedRotationDeg + 'deg)';
             console.log('[ReceiverLayout] Applied contain layout video=' + videoW + 'x' + videoH + ' screen=' + screenW + 'x' + screenH + ' rotation=' + forcedRotationDeg + 'deg');
         }
@@ -116,10 +117,24 @@
         function applyOrientationMessage(value) {
             // iOS/ReplayKit orientation attachment values:
             // 1 = portrait, 3 = portrait upside-down, 6 = landscape-left, 8 = landscape-right
-            if (value === 8) {
-                forcedRotationDeg = 180;
-            } else {
-                forcedRotationDeg = 0;
+            switch (value) {
+                case 6:
+                    // Landscape-left
+                    forcedRotationDeg = 90;
+                    break;
+                case 8:
+                    // Landscape-right
+                    forcedRotationDeg = -90;
+                    break;
+                case 3:
+                    // Portrait upside-down
+                    forcedRotationDeg = 180;
+                    break;
+                case 1:
+                default:
+                    // Portrait
+                    forcedRotationDeg = 0;
+                    break;
             }
             console.log('[ReceiverLayout] Orientation message value=' + value + ' -> forcedRotation=' + forcedRotationDeg + 'deg');
             applyVideoLayout();
