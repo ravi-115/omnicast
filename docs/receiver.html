@@ -259,6 +259,17 @@
         
         function sendMediaStatus(requestId, playerState) {
             if (!castContext) return;
+
+            const activeElement = currentMode === 'video' ? remoteVideo : audioPlayer;
+            const currentTime = Number.isFinite(activeElement.currentTime) ? activeElement.currentTime : 0;
+            const volumeLevel =
+                typeof activeElement.volume === 'number' && Number.isFinite(activeElement.volume)
+                    ? activeElement.volume
+                    : 1;
+            const muted =
+                typeof activeElement.muted === 'boolean'
+                    ? activeElement.muted
+                    : false;
             
             const status = {
                 type: 'MEDIA_STATUS',
@@ -267,11 +278,11 @@
                     mediaSessionId: 1,
                     playbackRate: 1,
                     playerState: playerState,
-                    currentTime: audioPlayer.currentTime,
+                    currentTime: currentTime,
                     supportedMediaCommands: 15,
                     volume: {
-                        level: audioPlayer.volume,
-                        muted: audioPlayer.muted
+                        level: volumeLevel,
+                        muted: muted
                     }
                 }]
             };
@@ -305,23 +316,46 @@
                         break;
                     case 'PLAY':
                         console.log('[Audio] PLAY command');
-                        audioPlayer.play();
+                        if (currentMode === 'video') {
+                            remoteVideo.play().catch((error) => {
+                                console.warn('[WebRTC] remoteVideo.play() failed during PLAY:', error);
+                            });
+                        } else {
+                            audioPlayer.play();
+                        }
                         sendMediaStatus(data.requestId, 'PLAYING');
                         break;
                     case 'PAUSE':
                         console.log('[Audio] PAUSE command');
-                        audioPlayer.pause();
+                        if (currentMode === 'video') {
+                            remoteVideo.pause();
+                        } else {
+                            audioPlayer.pause();
+                        }
                         sendMediaStatus(data.requestId, 'PAUSED');
                         break;
                     case 'STOP':
                         console.log('[Audio] STOP command');
-                        audioPlayer.pause();
-                        audioPlayer.currentTime = 0;
+                        if (currentMode === 'video') {
+                            remoteVideo.pause();
+                            remoteVideo.srcObject = null;
+                        } else {
+                            audioPlayer.pause();
+                            audioPlayer.currentTime = 0;
+                            audioPlayer.src = '';
+                        }
+                        currentMode = null;
                         sendMediaStatus(data.requestId, 'IDLE');
                         break;
                     case 'GET_STATUS':
                         console.log('[Audio] GET_STATUS command');
-                        sendMediaStatus(data.requestId, audioPlayer.paused ? 'PAUSED' : 'PLAYING');
+                        if (currentMode === 'video') {
+                            sendMediaStatus(data.requestId, remoteVideo.paused ? 'PAUSED' : 'PLAYING');
+                        } else if (currentMode === 'audio') {
+                            sendMediaStatus(data.requestId, audioPlayer.paused ? 'PAUSED' : 'PLAYING');
+                        } else {
+                            sendMediaStatus(data.requestId, 'IDLE');
+                        }
                         break;
                     default:
                         console.log('[Audio] Unknown command:', data.type);
