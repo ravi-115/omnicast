@@ -2,7 +2,7 @@
 <html>
 <head>
     <meta charset="utf-8">
-    <title>OmniCast Audio+Video Receiver</title>
+    <title>OmniCast Audio+Video Receiver V2</title>
     <script src="//www.gstatic.com/cast/sdk/libs/caf_receiver/v3/cast_receiver_framework.js"></script>
     <style>
         body {
@@ -64,7 +64,7 @@
     <div id="status">Waiting for connection...</div>
     <video id="remoteVideo" autoplay playsinline></video>
     <audio id="audioPlayer" autoplay></audio>
-    
+
     <div id="audioVisualizer" style="display: none;">
         <div id="audioTitle">🎵 OmniCast Audio</div>
         <div id="audioWaveform">♪ ♫ ♪ ♫ ♪</div>
@@ -73,33 +73,38 @@
     <script>
         const WEBRTC_NAMESPACE = 'urn:x-cast:com.omnicast.webrtc';
         const MEDIA_NAMESPACE = 'urn:x-cast:com.google.cast.media';
-        
-        let peerConnection = null;
-        let castContext = null;
+
         const statusDiv = document.getElementById('status');
         const remoteVideo = document.getElementById('remoteVideo');
         const audioPlayer = document.getElementById('audioPlayer');
         const audioVisualizer = document.getElementById('audioVisualizer');
-        let messageCount = 0;
-        let currentMode = null; // 'audio' or 'video'
-        let orientationValue = 1;
-        let videoTelemetryStarted = false;
-        let lastRenderedFrameAtMs = 0;
-        let lastRenderedFrameCount = 0;
-        let suppressVideoStateEvents = false;
-        let activeVideoStream = null;
-        let lastPlaybackRetryAtMs = 0;
-        let lastKeyframeRecoveryAtMs = 0;
-        let lastVideoElementResetAtMs = 0;
-        let hasRenderedVideoFrame = false;
-        let videoRecoveryArmedAtMs = 0;
-        
+
+        const state = {
+            castContext: null,
+            peerConnection: null,
+            activeMode: null,
+            orientationValue: 1,
+            activeVideoStream: null,
+            receiverState: 'detached',
+            currentRequestId: 0,
+            renderTelemetryStarted: false,
+            hasRenderedVideoFrame: false,
+            lastRenderedFrameAtMs: 0,
+            lastRenderedFrameCount: 0,
+            lastRecoveryRequestAtMs: 0
+        };
+
+        const rtcConfig = {
+            iceServers: [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:stun1.l.google.com:19302' }
+            ]
+        };
+
         function updateStatus(message) {
-            console.log('[OmniCast Receiver]', message);
+            console.log('[OmniCast Receiver V2]', message);
             statusDiv.textContent = message;
             statusDiv.style.opacity = '1';
-            
-            // Hide status after 3 seconds if connected
             if (message.includes('Connected') || message.includes('Streaming') || message.includes('Playing')) {
                 setTimeout(() => {
                     statusDiv.style.opacity = '0';
@@ -107,282 +112,24 @@
             }
         }
 
-        function requestVideoRecovery(reason, options = {}) {
-            if (currentMode !== 'video') return;
-
-            const now = Date.now();
-            const {
-                forceElementReset = false,
-                requestKeyframe = true,
-                retryPlayback = true
-            } = options;
-            const recoveryReady = hasRenderedVideoFrame && now >= videoRecoveryArmedAtMs;
-
-            console.warn(`[ReceiverAVVideo] recovery reason=${reason} paused=${remoteVideo.paused} readyState=${remoteVideo.readyState} currentTime=${remoteVideo.currentTime.toFixed(3)}`);
-
-            if (retryPlayback && now - lastPlaybackRetryAtMs >= 500) {
-                lastPlaybackRetryAtMs = now;
-                if (!remoteVideo.srcObject && activeVideoStream) {
-                    remoteVideo.srcObject = activeVideoStream;
-                }
-                remoteVideo.play().catch((error) => {
-                    console.warn('[ReceiverAVVideo] recovery play() failed:', error);
-                });
-            }
-
-            if (requestKeyframe && recoveryReady && now - lastKeyframeRecoveryAtMs >= 800) {
-                lastKeyframeRecoveryAtMs = now;
-                sendWebRTCMessage({
-                    type: 'requestKeyFrame',
-                    reason
-                });
-            }
-
-            if (forceElementReset && recoveryReady && activeVideoStream && now - lastVideoElementResetAtMs >= 2500) {
-                lastVideoElementResetAtMs = now;
-                const stream = activeVideoStream;
-                runWithSuppressedVideoStateEvents(() => {
-                    remoteVideo.pause();
-                    remoteVideo.srcObject = null;
-                });
-                setTimeout(() => {
-                    remoteVideo.srcObject = stream;
-                    remoteVideo.play().catch((error) => {
-                        console.warn('[ReceiverAVVideo] element reset play() failed:', error);
-                    });
-                }, 0);
-            }
+        function setReceiverState(nextState, extra = '') {
+            state.receiverState = nextState;
+            console.log(`[ReceiverV2] state=${nextState}${extra ? ' ' + extra : ''}`);
         }
 
-        function startVideoTelemetry(video, label) {
-            if (videoTelemetryStarted) return;
-            videoTelemetryStarted = true;
-
-            ['play', 'playing', 'pause', 'waiting', 'stalled', 'ended', 'error'].forEach((eventName) => {
-                video.addEventListener(eventName, () => {
-                    console.log(`[${label}] event=${eventName} paused=${video.paused} readyState=${video.readyState} currentTime=${video.currentTime.toFixed(3)}`);
-                    if (currentMode !== 'video' || suppressVideoStateEvents) return;
-                    if (eventName === 'playing' || eventName === 'play') {
-                        lastRenderedFrameAtMs = Date.now();
-                        sendMediaStatus(0, 'PLAYING');
-                    } else if (eventName === 'pause') {
-                        sendMediaStatus(0, 'PAUSED');
-                    } else if (eventName === 'waiting') {
-                        requestVideoRecovery(`video_event_${eventName}`, {
-                            requestKeyframe: false,
-                            forceElementReset: false
-                        });
-                    } else if (eventName === 'stalled') {
-                        requestVideoRecovery(`video_event_${eventName}`);
-                    } else if (eventName === 'ended' || eventName === 'error') {
-                        requestVideoRecovery(`video_event_${eventName}`, {
-                            forceElementReset: eventName === 'error'
-                        });
-                        sendMediaStatus(0, 'IDLE');
-                    }
-                });
-            });
-
-            setInterval(() => {
-                if (typeof video.requestVideoFrameCallback !== 'function') {
-                    const quality = typeof video.getVideoPlaybackQuality === 'function'
-                        ? video.getVideoPlaybackQuality()
-                        : null;
-                    const renderedFrames =
-                        quality && Number.isFinite(quality.totalVideoFrames)
-                            ? quality.totalVideoFrames
-                            : (typeof video.webkitDecodedFrameCount === 'number'
-                                ? video.webkitDecodedFrameCount
-                                : 0);
-                    if (renderedFrames > lastRenderedFrameCount) {
-                        hasRenderedVideoFrame = true;
-                        lastRenderedFrameCount = renderedFrames;
-                        lastRenderedFrameAtMs = Date.now();
-                        if (renderedFrames === 1 || renderedFrames % 60 === 0) {
-                            console.log(`[${label}] rendered renderedFrames=${renderedFrames} currentTime=${video.currentTime.toFixed(3)}`);
-                        }
-                    }
-                }
-                const now = Date.now();
-                if (!video.paused && video.readyState >= 2 && lastRenderedFrameAtMs > 0 && now - lastRenderedFrameAtMs >= 1500) {
-                    const gapMs = now - lastRenderedFrameAtMs;
-                    console.warn(`[${label}] render-stall gapMs=${gapMs} currentTime=${video.currentTime.toFixed(3)}`);
-                    requestVideoRecovery('render_stall', {
-                        forceElementReset: gapMs >= 3000
-                    });
-                }
-            }, 1000);
-
-            if (typeof video.requestVideoFrameCallback === 'function') {
-                const onFrame = (_, metadata) => {
-                    hasRenderedVideoFrame = true;
-                    lastRenderedFrameAtMs = Date.now();
-                    if (metadata.presentedFrames === 1 || metadata.presentedFrames % 60 === 0) {
-                        console.log(`[${label}] rendered presentedFrames=${metadata.presentedFrames} mediaTime=${metadata.mediaTime?.toFixed?.(3) ?? 'n/a'}`);
-                    }
-                    video.requestVideoFrameCallback(onFrame);
-                };
-                video.requestVideoFrameCallback(onFrame);
-            }
+        function sendWebRTCMessage(message) {
+            if (!state.castContext) return;
+            state.castContext.sendCustomMessage(WEBRTC_NAMESPACE, undefined, message);
         }
 
-        function runWithSuppressedVideoStateEvents(work) {
-            suppressVideoStateEvents = true;
-            try {
-                work();
-            } finally {
-                setTimeout(() => {
-                    suppressVideoStateEvents = false;
-                }, 0);
-            }
-        }
-
-        function applyVideoLayout() {
-            if (!remoteVideo) return;
-
-            const videoW = remoteVideo.videoWidth || 0;
-            const videoH = remoteVideo.videoHeight || 0;
-            const screenW = window.innerWidth;
-            const screenH = window.innerHeight;
-            const isLandscapeDisplay = screenW > screenH;
-            const isPortraitEncoded = videoW > 0 && videoH > 0 && videoH > videoW;
-
-            // Chromecast/WebRTC can already apply CVO orientation metadata.
-            // Manual rotation should be applied only when stream remains portrait-coded
-            // on a landscape display, otherwise we risk double-rotation (upside-down).
-            let effectiveRotationDeg = 0;
-            if ((orientationValue === 6 || orientationValue === 8) && isLandscapeDisplay && isPortraitEncoded) {
-                effectiveRotationDeg = orientationValue === 6 ? -90 : 90;
-            } else if (orientationValue === 3) {
-                effectiveRotationDeg = 180;
-            }
-
-            // Default production behavior: preserve full image with black bars.
-            remoteVideo.style.objectFit = 'contain';
-            const rightAngle = Math.abs(effectiveRotationDeg) === 90;
-            remoteVideo.style.width = rightAngle ? '100vh' : '100vw';
-            remoteVideo.style.height = rightAngle ? '100vw' : '100vh';
-            remoteVideo.style.transform = 'translate(-50%, -50%) rotate(' + effectiveRotationDeg + 'deg)';
-            console.log('[ReceiverLayout] Applied contain layout video=' + videoW + 'x' + videoH + ' screen=' + screenW + 'x' + screenH + ' orientation=' + orientationValue + ' rotation=' + effectiveRotationDeg + 'deg portraitEncoded=' + isPortraitEncoded);
-        }
-
-        function applyOrientationMessage(value) {
-            // iOS/ReplayKit orientation attachment values:
-            // 1 = portrait, 3 = portrait upside-down, 6 = landscape-left, 8 = landscape-right
-            orientationValue = Number(value) || 1;
-            console.log('[ReceiverLayout] Orientation message value=' + orientationValue);
-            applyVideoLayout();
-        }
-        
-        // ==================== AUDIO STREAMING ====================
-        
-        function handleMediaLoad(data) {
-            try {
-                updateStatus('Loading audio...');
-                console.log('[Audio] Received LOAD command - full data:', JSON.stringify(data, null, 2));
-                
-                const media = data.media || {};
-                const contentId = media.contentId;
-                const contentType = media.contentType || 'audio/x-wav';
-                
-                console.log('[Audio] Extracted media object:', media);
-                console.log('[Audio] Extracted contentId:', contentId);
-                console.log('[Audio] ContentId type:', typeof contentId);
-                
-                if (!contentId || contentId === '') {
-                    console.error('[Audio] No contentId in media - data:', data);
-                    console.error('[Audio] Media keys:', Object.keys(media));
-                    updateStatus('❌ No audio URL provided (contentId is empty)');
-                    return;
-                }
-                
-                console.log('[Audio] Loading:', contentId);
-                console.log('[Audio] Type:', contentType);
-                
-                // Switch to audio mode
-                currentMode = 'audio';
-                if (peerConnection) {
-                    try { peerConnection.close(); } catch (_) {}
-                    peerConnection = null;
-                }
-                runWithSuppressedVideoStateEvents(() => {
-                    remoteVideo.pause();
-                    remoteVideo.srcObject = null;
-                });
-                lastRenderedFrameAtMs = 0;
-                lastRenderedFrameCount = 0;
-                remoteVideo.style.display = 'none';
-                audioVisualizer.style.display = 'block';
-                
-                // Load and play audio
-                console.log('[Audio] Setting audioPlayer.src to:', contentId);
-                audioPlayer.src = contentId;
-                console.log('[Audio] audioPlayer.src is now:', audioPlayer.src);
-                audioPlayer.load();
-                console.log('[Audio] audioPlayer.load() called');
-                
-                audioPlayer.oncanplay = () => {
-                    console.log('[Audio] Ready to play');
-                    updateStatus('🎵 Starting playback...');
-                    audioPlayer.play().then(() => {
-                        updateStatus('🎵 Playing audio');
-                        console.log('[Audio] Playing successfully');
-                        console.log('[Audio] Audio src:', audioPlayer.src);
-                        console.log('[Audio] Audio duration:', audioPlayer.duration);
-                        console.log('[Audio] Audio readyState:', audioPlayer.readyState);
-                        
-                        // Send MEDIA_STATUS response
-                        sendMediaStatus(data.requestId, 'PLAYING');
-                    }).catch(error => {
-                        console.error('[Audio] Play error:', error);
-                        updateStatus('❌ Playback error: ' + error.message);
-                        sendMediaStatus(data.requestId, 'IDLE');
-                    });
-                };
-                
-                audioPlayer.onerror = (e) => {
-                    const errorCode = audioPlayer.error ? audioPlayer.error.code : 'unknown';
-                    const errorMessage = audioPlayer.error ? audioPlayer.error.message : 'Unknown error';
-                    console.error('[Audio] Load error code:', errorCode);
-                    console.error('[Audio] Load error message:', errorMessage);
-                    console.error('[Audio]  Audio src:', audioPlayer.src);
-                    updateStatus('❌ Load error: ' + errorCode + ' - ' + errorMessage);
-                    sendMediaStatus(data.requestId, 'IDLE');
-                };
-                
-                audioPlayer.onplaying = () => {
-                    console.log('[Audio] Now playing');
-                    updateStatus('🔊 Audio streaming');
-                };
-                
-                audioPlayer.onstalled = () => {
-                    console.warn('[Audio] Playback stalled');
-                };
-                
-                audioPlayer.onwaiting = () => {
-                    console.warn('[Audio] Buffering...');
-                    updateStatus('⏳ Buffering...');
-                };
-                
-                audioPlayer.onended = () => {
-                    console.log('[Audio] Playback ended');
-                    updateStatus('Audio ended');
-                    sendMediaStatus(data.requestId, 'IDLE');
-                };
-                
-            } catch (error) {
-                console.error('[Audio] Error in handleMediaLoad:', error);
-                updateStatus('❌ Error: ' + error.message);
-            }
-        }
-        
         function sendMediaStatus(requestId, playerState) {
-            if (!castContext) return;
+            if (!state.castContext) return;
 
             const activeElement =
-                currentMode === 'video' ? remoteVideo :
-                currentMode === 'audio' ? audioPlayer :
+                state.activeMode === 'video' ? remoteVideo :
+                state.activeMode === 'audio' ? audioPlayer :
                 null;
+
             const currentTime = activeElement && Number.isFinite(activeElement.currentTime) ? activeElement.currentTime : 0;
             const volumeLevel =
                 activeElement && typeof activeElement.volume === 'number' && Number.isFinite(activeElement.volume)
@@ -392,346 +139,379 @@
                 activeElement && typeof activeElement.muted === 'boolean'
                     ? activeElement.muted
                     : false;
-            
-            const status = {
+
+            state.castContext.sendCustomMessage(MEDIA_NAMESPACE, undefined, {
                 type: 'MEDIA_STATUS',
                 requestId: requestId || 0,
                 status: [{
                     mediaSessionId: 1,
                     playbackRate: 1,
-                    playerState: playerState,
-                    currentTime: currentTime,
+                    playerState,
+                    currentTime,
                     supportedMediaCommands: 15,
                     volume: {
                         level: volumeLevel,
-                        muted: muted
+                        muted
                     }
                 }]
-            };
-            
-            console.log('[Audio] Sending status:', playerState);
-            castContext.sendCustomMessage(MEDIA_NAMESPACE, undefined, status);
+            });
         }
-        
-        function handleMediaCommand(event) {
-            try {
-                console.log('[Audio] Received custom message');
-                console.log('[Audio] Event:', event);
-                console.log('[Audio] Sender ID:', event.senderId);
-                
-                // Cast SDK may auto-parse JSON
-                let data;
-                if (typeof event.data === 'string') {
-                    console.log('[Audio] Parsing JSON string');
-                    data = JSON.parse(event.data);
-                } else {
-                    console.log('[Audio] Data already parsed');
-                    data = event.data;
+
+        function applyVideoLayout() {
+            const videoW = remoteVideo.videoWidth || 0;
+            const videoH = remoteVideo.videoHeight || 0;
+            const screenW = window.innerWidth;
+            const screenH = window.innerHeight;
+            const isLandscapeDisplay = screenW > screenH;
+            const isPortraitEncoded = videoW > 0 && videoH > 0 && videoH > videoW;
+
+            let effectiveRotationDeg = 0;
+            if ((state.orientationValue === 6 || state.orientationValue === 8) && isLandscapeDisplay && isPortraitEncoded) {
+                effectiveRotationDeg = state.orientationValue === 6 ? -90 : 90;
+            } else if (state.orientationValue === 3) {
+                effectiveRotationDeg = 180;
+            }
+
+            const rightAngle = Math.abs(effectiveRotationDeg) === 90;
+            remoteVideo.style.objectFit = 'contain';
+            remoteVideo.style.width = rightAngle ? '100vh' : '100vw';
+            remoteVideo.style.height = rightAngle ? '100vw' : '100vh';
+            remoteVideo.style.transform = 'translate(-50%, -50%) rotate(' + effectiveRotationDeg + 'deg)';
+        }
+
+        function applyOrientationMessage(value) {
+            state.orientationValue = Number(value) || 1;
+            console.log('[ReceiverV2] orientation=' + state.orientationValue);
+            applyVideoLayout();
+        }
+
+        function resetVideoTelemetry() {
+            state.hasRenderedVideoFrame = false;
+            state.lastRenderedFrameAtMs = 0;
+            state.lastRenderedFrameCount = 0;
+        }
+
+        function requestVideoRecovery(reason) {
+            if (state.activeMode !== 'video') return;
+            const now = Date.now();
+            if (now - state.lastRecoveryRequestAtMs < 800) return;
+            state.lastRecoveryRequestAtMs = now;
+            setReceiverState('render-stalled', `reason=${reason}`);
+            sendWebRTCMessage({
+                type: 'requestKeyFrame',
+                reason
+            });
+        }
+
+        function startVideoTelemetry() {
+            if (state.renderTelemetryStarted) return;
+            state.renderTelemetryStarted = true;
+
+            ['play', 'playing', 'pause', 'waiting', 'stalled', 'ended', 'error'].forEach((eventName) => {
+                remoteVideo.addEventListener(eventName, () => {
+                    console.log(`[ReceiverV2Video] event=${eventName} paused=${remoteVideo.paused} readyState=${remoteVideo.readyState} currentTime=${remoteVideo.currentTime.toFixed(3)}`);
+                    if (state.activeMode !== 'video') return;
+                    if (eventName === 'play' || eventName === 'playing') {
+                        state.lastRenderedFrameAtMs = Date.now();
+                        sendMediaStatus(0, 'PLAYING');
+                    } else if (eventName === 'pause') {
+                        sendMediaStatus(0, 'PAUSED');
+                    } else if (eventName === 'stalled' || eventName === 'error') {
+                        requestVideoRecovery(`video_event_${eventName}`);
+                    } else if (eventName === 'ended') {
+                        sendMediaStatus(0, 'IDLE');
+                    }
+                });
+            });
+
+            if (typeof remoteVideo.requestVideoFrameCallback === 'function') {
+                const onFrame = (_, metadata) => {
+                    state.hasRenderedVideoFrame = true;
+                    state.lastRenderedFrameAtMs = Date.now();
+                    if (metadata.presentedFrames === 1) {
+                        setReceiverState('first-frame-rendered');
+                    }
+                    remoteVideo.requestVideoFrameCallback(onFrame);
+                };
+                remoteVideo.requestVideoFrameCallback(onFrame);
+            } else {
+                setInterval(() => {
+                    const quality = typeof remoteVideo.getVideoPlaybackQuality === 'function'
+                        ? remoteVideo.getVideoPlaybackQuality()
+                        : null;
+                    const renderedFrames =
+                        quality && Number.isFinite(quality.totalVideoFrames)
+                            ? quality.totalVideoFrames
+                            : (typeof remoteVideo.webkitDecodedFrameCount === 'number'
+                                ? remoteVideo.webkitDecodedFrameCount
+                                : 0);
+                    if (renderedFrames > state.lastRenderedFrameCount) {
+                        state.hasRenderedVideoFrame = true;
+                        state.lastRenderedFrameCount = renderedFrames;
+                        state.lastRenderedFrameAtMs = Date.now();
+                        if (renderedFrames === 1) {
+                            setReceiverState('first-frame-rendered');
+                        }
+                    }
+                }, 250);
+            }
+
+            setInterval(() => {
+                if (state.activeMode !== 'video') return;
+                if (!state.hasRenderedVideoFrame) return;
+                if (remoteVideo.paused || remoteVideo.readyState < 2) return;
+                const gapMs = Date.now() - state.lastRenderedFrameAtMs;
+                if (gapMs >= 1500) {
+                    requestVideoRecovery('render_stall');
                 }
-                
-                console.log('[Audio] Command type:', data.type);
-                console.log('[Audio] Full data:', data);
-                
-                switch (data.type) {
-                    case 'LOAD':
-                        handleMediaLoad(data);
-                        break;
-                    case 'PLAY':
-                        console.log('[Audio] PLAY command');
-                        if (currentMode === 'video') {
-                            remoteVideo.play().catch((error) => {
-                                console.warn('[WebRTC] remoteVideo.play() failed during PLAY:', error);
-                            });
-                        } else {
-                            audioPlayer.play();
-                        }
-                        sendMediaStatus(data.requestId, 'PLAYING');
-                        break;
-                    case 'PAUSE':
-                        console.log('[Audio] PAUSE command');
-                        if (currentMode === 'video') {
-                            remoteVideo.pause();
-                        } else {
-                            audioPlayer.pause();
-                        }
-                        sendMediaStatus(data.requestId, 'PAUSED');
-                        break;
-                    case 'STOP':
-                        console.log('[Audio] STOP command');
-                        if (currentMode === 'video') {
-                            runWithSuppressedVideoStateEvents(() => {
-                                remoteVideo.pause();
-                                remoteVideo.srcObject = null;
-                            });
-                            activeVideoStream = null;
-                            hasRenderedVideoFrame = false;
-                            videoRecoveryArmedAtMs = 0;
-                            if (peerConnection) {
-                                try { peerConnection.close(); } catch (_) {}
-                                peerConnection = null;
-                            }
-                            lastRenderedFrameAtMs = 0;
-                            lastRenderedFrameCount = 0;
-                        } else {
-                            audioPlayer.pause();
-                            audioPlayer.currentTime = 0;
-                            audioPlayer.src = '';
-                        }
-                        currentMode = null;
-                        sendMediaStatus(data.requestId, 'IDLE');
-                        break;
-                    case 'GET_STATUS':
-                        console.log('[Audio] GET_STATUS command');
-                        if (currentMode === 'video') {
-                            sendMediaStatus(data.requestId, remoteVideo.paused ? 'PAUSED' : 'PLAYING');
-                        } else if (currentMode === 'audio') {
-                            sendMediaStatus(data.requestId, audioPlayer.paused ? 'PAUSED' : 'PLAYING');
-                        } else {
-                            sendMediaStatus(data.requestId, 'IDLE');
-                        }
-                        break;
-                    default:
-                        console.log('[Audio] Unknown command:', data.type);
-                        updateStatus('❓ Unknown command: ' + data.type);
-                }
-            } catch (error) {
-                console.error('[Audio] Command error:', error);
-                console.error('[Audio] Stack:', error.stack);
-                updateStatus('❌ Error: ' + error.message);
+            }, 1000);
+        }
+
+        function cleanupPeerConnection() {
+            if (state.peerConnection) {
+                try {
+                    state.peerConnection.close();
+                } catch (_) {}
+                state.peerConnection = null;
             }
         }
-        
-        // ==================== WEBRTC VIDEO STREAMING ====================
-        
-        const rtcConfig = {
-            iceServers: [
-                { urls: 'stun:stun.l.google.com:19302' },
-                { urls: 'stun:stun1.l.google.com:19302' }
-            ]
-        };
-        
-        function initializePeerConnection() {
-            if (peerConnection) {
-                peerConnection.close();
-            }
-            
-            updateStatus('Creating peer connection...');
-            peerConnection = new RTCPeerConnection(rtcConfig);
-            
-            // Switch to video mode
-            currentMode = 'video';
-            activeVideoStream = null;
-            hasRenderedVideoFrame = false;
-            videoRecoveryArmedAtMs = Date.now() + 2000;
+
+        function switchToVideoMode() {
+            state.activeMode = 'video';
+            state.activeVideoStream = null;
+            resetVideoTelemetry();
             audioPlayer.pause();
             audioPlayer.currentTime = 0;
             audioPlayer.src = '';
-            runWithSuppressedVideoStateEvents(() => {
-                remoteVideo.pause();
-                remoteVideo.srcObject = null;
-            });
-            lastRenderedFrameAtMs = 0;
-            lastRenderedFrameCount = 0;
             audioVisualizer.style.display = 'none';
             remoteVideo.style.display = 'block';
-            
-            peerConnection.ontrack = (event) => {
-                updateStatus('Received video track');
-                console.log('[WebRTC] Track received:', event.track.kind);
-                
-                if (event.streams && event.streams[0]) {
-                    activeVideoStream = event.streams[0];
-                    remoteVideo.srcObject = event.streams[0];
-                    updateStatus('Streaming video');
-                } else {
-                    const stream = new MediaStream();
-                    stream.addTrack(event.track);
-                    activeVideoStream = stream;
-                    remoteVideo.srcObject = stream;
-                    updateStatus('Streaming video');
-                }
-                remoteVideo.play().catch((error) => {
-                    console.warn('[WebRTC] remoteVideo.play() failed:', error);
-                    sendMediaStatus(0, 'PAUSED');
-                });
-                startVideoTelemetry(remoteVideo, 'ReceiverAVVideo');
+            setReceiverState('awaiting-first-frame');
+        }
 
-                remoteVideo.onloadedmetadata = () => {
-                    applyVideoLayout();
-                };
-                remoteVideo.onresize = () => {
-                    applyVideoLayout();
-                };
+        function switchToAudioMode() {
+            state.activeMode = 'audio';
+            cleanupPeerConnection();
+            state.activeVideoStream = null;
+            remoteVideo.pause();
+            remoteVideo.srcObject = null;
+            remoteVideo.style.display = 'none';
+            audioVisualizer.style.display = 'block';
+            resetVideoTelemetry();
+            setReceiverState('detached');
+        }
+
+        function initializePeerConnection() {
+            cleanupPeerConnection();
+            state.peerConnection = new RTCPeerConnection(rtcConfig);
+            switchToVideoMode();
+
+            state.peerConnection.ontrack = (event) => {
+                updateStatus('Received video track');
+                const stream = event.streams && event.streams[0]
+                    ? event.streams[0]
+                    : (() => {
+                        const fallback = new MediaStream();
+                        fallback.addTrack(event.track);
+                        return fallback;
+                    })();
+
+                state.activeVideoStream = stream;
+                remoteVideo.srcObject = stream;
+                remoteVideo.style.display = 'block';
+                remoteVideo.play().catch((error) => {
+                    console.warn('[ReceiverV2] remoteVideo.play() failed:', error);
+                });
+                applyVideoLayout();
+                startVideoTelemetry();
+                updateStatus('Streaming video');
             };
-            
-            peerConnection.onicecandidate = (event) => {
-                if (event.candidate) {
-                    console.log('[WebRTC] Generated ICE candidate');
-                    const message = {
-                        type: 'iceCandidate',
-                        candidate: event.candidate.candidate,
-                        sdpMid: event.candidate.sdpMid,
-                        sdpMLineIndex: event.candidate.sdpMLineIndex
-                    };
-                    sendWebRTCMessage(message);
-                }
+
+            state.peerConnection.onicecandidate = (event) => {
+                if (!event.candidate) return;
+                sendWebRTCMessage({
+                    type: 'iceCandidate',
+                    candidate: event.candidate.candidate,
+                    sdpMid: event.candidate.sdpMid,
+                    sdpMLineIndex: event.candidate.sdpMLineIndex
+                });
             };
-            
-            peerConnection.onconnectionstatechange = () => {
-                console.log('[WebRTC] Connection state:', peerConnection.connectionState);
-                updateStatus('Connection: ' + peerConnection.connectionState);
-                
-                if (peerConnection.connectionState === 'connected') {
+
+            state.peerConnection.onconnectionstatechange = () => {
+                const connectionState = state.peerConnection ? state.peerConnection.connectionState : 'closed';
+                console.log('[ReceiverV2] connection=' + connectionState);
+                updateStatus('Connection: ' + connectionState);
+                if (connectionState === 'connected') {
+                    setReceiverState('receiver-ready');
                     updateStatus('🎥 Connected - Streaming');
-                } else if (peerConnection.connectionState === 'failed') {
-                    updateStatus('❌ Connection failed');
+                } else if (connectionState === 'failed') {
+                    setReceiverState('render-stalled', 'reason=peer_failed');
                 }
             };
         }
-        
-        function sendWebRTCMessage(message) {
-            if (!castContext) return;
-            castContext.sendCustomMessage(WEBRTC_NAMESPACE, undefined, message);
-        }
-        
+
         async function handleOffer(data) {
             try {
                 updateStatus('Processing offer...');
-                console.log('[WebRTC] Received offer');
-                
                 initializePeerConnection();
-                
-                const offer = new RTCSessionDescription({
-                    type: 'offer',
-                    sdp: data.sdp
-                });
-                
-                await peerConnection.setRemoteDescription(offer);
-                console.log('[WebRTC] Remote description set');
-                
-                const answer = await peerConnection.createAnswer();
-                await peerConnection.setLocalDescription(answer);
-                console.log('[WebRTC] Local description set');
-                
-                const answerMessage = {
-                    type: 'answer',
-                    sdp: answer.sdp
-                };
-                sendWebRTCMessage(answerMessage);
+                const offer = new RTCSessionDescription({ type: 'offer', sdp: data.sdp });
+                await state.peerConnection.setRemoteDescription(offer);
+                const answer = await state.peerConnection.createAnswer();
+                await state.peerConnection.setLocalDescription(answer);
+                sendWebRTCMessage({ type: 'answer', sdp: answer.sdp });
                 updateStatus('Answer sent, establishing connection...');
-                
             } catch (error) {
-                console.error('[WebRTC] Error handling offer:', error);
+                console.error('[ReceiverV2] Error handling offer:', error);
                 updateStatus('❌ Error: ' + error.message);
+                setReceiverState('detached', 'reason=offer_error');
             }
         }
-        
+
         async function handleIceCandidate(data) {
+            if (!state.peerConnection) return;
             try {
-                if (!peerConnection) {
-                    console.warn('[WebRTC] Peer connection not initialized for ICE candidate');
-                    return;
-                }
-                
-                const candidate = new RTCIceCandidate({
+                await state.peerConnection.addIceCandidate(new RTCIceCandidate({
                     candidate: data.candidate,
                     sdpMid: data.sdpMid,
                     sdpMLineIndex: data.sdpMLineIndex
-                });
-                
-                await peerConnection.addIceCandidate(candidate);
-                console.log('[WebRTC] ICE candidate added');
-                
+                }));
             } catch (error) {
-                console.error('[WebRTC] Error adding ICE candidate:', error);
+                console.error('[ReceiverV2] ICE candidate error:', error);
             }
         }
-        
+
         function handleWebRTCMessage(event) {
             try {
-                messageCount++;
-                
-                let data;
-                if (typeof event.data === 'string') {
-                    data = JSON.parse(event.data);
-                } else {
-                    data = event.data;
-                }
-                
-                console.log('[WebRTC] Message type:', data.type);
-                
+                const data = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;
                 switch (data.type) {
-                    case 'offer':
-                        handleOffer(data);
-                        break;
-                    case 'iceCandidate':
-                        handleIceCandidate(data);
-                        break;
-                    case 'orientation':
-                        applyOrientationMessage(data.value);
-                        break;
-                    default:
-                        console.log('[WebRTC] Unknown message type:', data.type);
+                case 'offer':
+                    handleOffer(data);
+                    break;
+                case 'iceCandidate':
+                    handleIceCandidate(data);
+                    break;
+                case 'orientation':
+                    applyOrientationMessage(data.value);
+                    break;
+                default:
+                    console.log('[ReceiverV2] Unknown WebRTC message type:', data.type);
                 }
             } catch (error) {
-                console.error('[WebRTC] Error parsing message:', error);
+                console.error('[ReceiverV2] Error parsing WebRTC message:', error);
             }
         }
-        
-        // ==================== CAST RECEIVER INITIALIZATION ====================
-        
-        window.addEventListener('load', () => {
-            updateStatus('Initializing Cast Receiver...');
 
-            window.addEventListener('resize', () => {
-                applyVideoLayout();
-            });
-            
+        function handleMediaLoad(data) {
+            const media = data.media || {};
+            const contentId = media.contentId;
+            if (!contentId) {
+                updateStatus('❌ No audio URL provided');
+                return;
+            }
+
+            state.currentRequestId = data.requestId || 0;
+            switchToAudioMode();
+            audioPlayer.src = contentId;
+            audioPlayer.load();
+
+            audioPlayer.oncanplay = () => {
+                audioPlayer.play().then(() => {
+                    updateStatus('🎵 Playing audio');
+                    sendMediaStatus(state.currentRequestId, 'PLAYING');
+                }).catch((error) => {
+                    updateStatus('❌ Playback error: ' + error.message);
+                    sendMediaStatus(state.currentRequestId, 'IDLE');
+                });
+            };
+
+            audioPlayer.onerror = () => {
+                updateStatus('❌ Audio load error');
+                sendMediaStatus(state.currentRequestId, 'IDLE');
+            };
+        }
+
+        function handleMediaCommand(event) {
+            try {
+                const data = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;
+                switch (data.type) {
+                case 'LOAD':
+                    handleMediaLoad(data);
+                    break;
+                case 'PLAY':
+                    if (state.activeMode === 'video') {
+                        remoteVideo.play().catch(() => {});
+                    } else if (state.activeMode === 'audio') {
+                        audioPlayer.play().catch(() => {});
+                    }
+                    sendMediaStatus(data.requestId, 'PLAYING');
+                    break;
+                case 'PAUSE':
+                    if (state.activeMode === 'video') {
+                        remoteVideo.pause();
+                    } else if (state.activeMode === 'audio') {
+                        audioPlayer.pause();
+                    }
+                    sendMediaStatus(data.requestId, 'PAUSED');
+                    break;
+                case 'STOP':
+                    cleanupSession();
+                    sendMediaStatus(data.requestId, 'IDLE');
+                    break;
+                case 'GET_STATUS':
+                    if (state.activeMode === 'video') {
+                        sendMediaStatus(data.requestId, remoteVideo.paused ? 'PAUSED' : 'PLAYING');
+                    } else if (state.activeMode === 'audio') {
+                        sendMediaStatus(data.requestId, audioPlayer.paused ? 'PAUSED' : 'PLAYING');
+                    } else {
+                        sendMediaStatus(data.requestId, 'IDLE');
+                    }
+                    break;
+                default:
+                    console.log('[ReceiverV2] Unknown media command:', data.type);
+                }
+            } catch (error) {
+                console.error('[ReceiverV2] Media command error:', error);
+            }
+        }
+
+        function cleanupSession() {
+            cleanupPeerConnection();
+            audioPlayer.pause();
+            audioPlayer.currentTime = 0;
+            audioPlayer.src = '';
+            remoteVideo.pause();
+            remoteVideo.srcObject = null;
+            remoteVideo.style.display = 'none';
+            audioVisualizer.style.display = 'none';
+            state.activeVideoStream = null;
+            state.activeMode = null;
+            resetVideoTelemetry();
+            setReceiverState('detached');
+        }
+
+        window.addEventListener('load', () => {
+            updateStatus('Initializing Cast Receiver V2...');
+            window.addEventListener('resize', applyVideoLayout);
+
             const context = cast.framework.CastReceiverContext.getInstance();
-            castContext = context;
-            
+            state.castContext = context;
+
             context.addEventListener(cast.framework.system.EventType.SENDER_CONNECTED, () => {
-                console.log('[Cast] Sender connected');
                 updateStatus('📱 Sender connected - Ready');
+                setReceiverState('launching');
             });
-            
+
             context.addEventListener(cast.framework.system.EventType.SENDER_DISCONNECTED, () => {
-                console.log('[Cast] Sender disconnected');
                 updateStatus('Sender disconnected');
-                
-                // Clean up
-                if (audioPlayer.src) {
-                    audioPlayer.pause();
-                    audioPlayer.src = '';
-                }
-                remoteVideo.pause();
-                remoteVideo.srcObject = null;
-                activeVideoStream = null;
-                hasRenderedVideoFrame = false;
-                videoRecoveryArmedAtMs = 0;
-                if (peerConnection) {
-                    peerConnection.close();
-                    peerConnection = null;
-                }
-                lastRenderedFrameAtMs = 0;
-                lastRenderedFrameCount = 0;
-                currentMode = null;
+                cleanupSession();
             });
-            
-            // Listen for WebRTC messages
+
             context.addCustomMessageListener(WEBRTC_NAMESPACE, handleWebRTCMessage);
-            console.log('[Cast] Listening on namespace:', WEBRTC_NAMESPACE);
-            
-            // Listen for Media messages (for audio)
             context.addCustomMessageListener(MEDIA_NAMESPACE, handleMediaCommand);
-            console.log('[Cast] Listening on namespace:', MEDIA_NAMESPACE);
-            
+
             const options = new cast.framework.CastReceiverOptions();
             options.disableIdleTimeout = true;
-            
             context.start(options);
             updateStatus('✅ Ready for Audio or Video');
-            console.log('[Cast] Receiver started and ready');
         });
     </script>
 </body>
