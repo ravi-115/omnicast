@@ -93,6 +93,11 @@
         let lastVideoElementResetAtMs = 0;
         let hasRenderedVideoFrame = false;
         let videoRecoveryArmedAtMs = 0;
+
+        // A/V sync: collect tracks and start playback only when both are ready
+        let pendingVideoTrack = null;
+        let pendingAudioTrack = null;
+        let avSyncStarted = false;
         
         function updateStatus(message) {
             console.log('[OmniCast Receiver]', message);
@@ -547,6 +552,9 @@
             activeVideoStream = null;
             hasRenderedVideoFrame = false;
             videoRecoveryArmedAtMs = Date.now() + 2000;
+            pendingVideoTrack = null;
+            pendingAudioTrack = null;
+            avSyncStarted = false;
             audioPlayer.pause();
             audioPlayer.currentTime = 0;
             audioPlayer.src = '';
@@ -560,25 +568,53 @@
             remoteVideo.style.display = 'block';
             
             peerConnection.ontrack = (event) => {
-                updateStatus('Received video track');
                 console.log('[WebRTC] Track received:', event.track.kind);
-                
-                if (event.streams && event.streams[0]) {
-                    activeVideoStream = event.streams[0];
-                    remoteVideo.srcObject = event.streams[0];
-                    updateStatus('Streaming video');
-                } else {
-                    const stream = new MediaStream();
-                    stream.addTrack(event.track);
+
+                // Collect tracks — start playback only when both arrive (A/V sync)
+                if (event.track.kind === 'video') {
+                    pendingVideoTrack = event.track;
+                } else if (event.track.kind === 'audio') {
+                    pendingAudioTrack = event.track;
+                }
+
+                if (pendingVideoTrack && pendingAudioTrack && !avSyncStarted) {
+                    avSyncStarted = true;
+                    console.log('[WebRTC] Both tracks received — starting synchronized playback');
+
+                    // Build a single stream with both tracks for browser-level A/V sync
+                    const stream = new MediaStream([pendingVideoTrack, pendingAudioTrack]);
                     activeVideoStream = stream;
                     remoteVideo.srcObject = stream;
-                    updateStatus('Streaming video');
+
+                    // Start muted; unmute when first video frame renders
+                    remoteVideo.muted = true;
+                    remoteVideo.play().then(() => {
+                        console.log('[WebRTC] play() succeeded (muted), waiting for first frame');
+                        sendMediaStatus(0, 'PLAYING');
+                    }).catch((error) => {
+                        console.warn('[WebRTC] remoteVideo.play() failed:', error);
+                        sendMediaStatus(0, 'PAUSED');
+                    });
+
+                    // Unmute after first video frame renders
+                    if (typeof remoteVideo.requestVideoFrameCallback === 'function') {
+                        remoteVideo.requestVideoFrameCallback(() => {
+                            console.log('[WebRTC] First video frame rendered — unmuting audio');
+                            remoteVideo.muted = false;
+                        });
+                    } else {
+                        // Fallback: unmute on loadeddata or after short delay
+                        remoteVideo.addEventListener('loadeddata', () => {
+                            console.log('[WebRTC] loadeddata — unmuting audio');
+                            remoteVideo.muted = false;
+                        }, { once: true });
+                    }
+
+                    startVideoTelemetry(remoteVideo, 'ReceiverAVVideo');
+                    updateStatus('Streaming video+audio');
+                } else {
+                    updateStatus('Received ' + event.track.kind + ' track, waiting for ' + (pendingVideoTrack ? 'audio' : 'video'));
                 }
-                remoteVideo.play().catch((error) => {
-                    console.warn('[WebRTC] remoteVideo.play() failed:', error);
-                    sendMediaStatus(0, 'PAUSED');
-                });
-                startVideoTelemetry(remoteVideo, 'ReceiverAVVideo');
 
                 remoteVideo.onloadedmetadata = () => {
                     applyVideoLayout();
