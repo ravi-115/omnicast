@@ -517,6 +517,30 @@
             
             updateStatus('Creating peer connection...');
             peerConnection = new RTCPeerConnection(rtcConfig);
+
+            // Pre-configure recvonly transceivers so Chromecast can accept sendonly offers
+            peerConnection.addTransceiver('video', { direction: 'recvonly' });
+            peerConnection.addTransceiver('audio', { direction: 'recvonly' });
+
+            // Prefer H.264 for video (Chromecast HW decode)
+            try {
+                const transceivers = peerConnection.getTransceivers();
+                for (const t of transceivers) {
+                    if (t.receiver && t.receiver.track && t.receiver.track.kind === 'video') {
+                        const caps = RTCRtpReceiver.getCapabilities('video');
+                        if (caps) {
+                            const h264 = caps.codecs.filter(c => c.mimeType === 'video/H264');
+                            const rest = caps.codecs.filter(c => c.mimeType !== 'video/H264');
+                            if (h264.length > 0) {
+                                t.setCodecPreferences([...h264, ...rest]);
+                                console.log('[WebRTC] Set codec preferences: H.264 first (' + h264.length + ' profiles)');
+                            }
+                        }
+                    }
+                }
+            } catch (e) {
+                console.warn('[WebRTC] Could not set codec preferences:', e);
+            }
             
             // Switch to video mode
             currentMode = 'video';
