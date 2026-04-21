@@ -262,13 +262,31 @@
                 effectiveRotationDeg = 180;
             }
 
-            // Default production behavior: preserve full image with black bars.
-            remoteVideo.style.objectFit = 'contain';
             const rightAngle = Math.abs(effectiveRotationDeg) === 90;
+
+            // Pick object-fit based on the *displayed* (post-rotation) aspect vs the TV.
+            // - Landscape-displayed video on a mismatched landscape TV: use `cover` to fill
+            //   the screen (iPhone 19.5:9 vs TV 16:9 would otherwise leave thick bars).
+            //   A small edge crop (~9% per side) is better than huge black bars.
+            // - Portrait-displayed video on a landscape TV: keep `contain` — cropping a
+            //   portrait phone to fill a landscape TV would lose a large part of the image.
+            // - Near-matching aspects (< 2% delta): keep `contain` since bars wouldn't be
+            //   visible anyway and we avoid unnecessary edge crop.
+            const displayedW = videoW > 0 && videoH > 0 ? (rightAngle ? videoH : videoW) : 0;
+            const displayedH = videoW > 0 && videoH > 0 ? (rightAngle ? videoW : videoH) : 0;
+            const displayedAspect = displayedH > 0 ? (displayedW / displayedH) : 0;
+            const screenAspect = screenH > 0 ? (screenW / screenH) : 0;
+            const aspectDelta = (displayedAspect > 0 && screenAspect > 0)
+                ? Math.abs(displayedAspect - screenAspect) / screenAspect
+                : 0;
+            const displayedIsLandscape = displayedW > 0 && displayedW > displayedH;
+            const fitMode = (displayedIsLandscape && aspectDelta > 0.02) ? 'cover' : 'contain';
+
+            remoteVideo.style.objectFit = fitMode;
             remoteVideo.style.width = rightAngle ? '100vh' : '100vw';
             remoteVideo.style.height = rightAngle ? '100vw' : '100vh';
             remoteVideo.style.transform = 'translate(-50%, -50%) rotate(' + effectiveRotationDeg + 'deg)';
-            console.log('[ReceiverLayout] Applied contain layout video=' + videoW + 'x' + videoH + ' screen=' + screenW + 'x' + screenH + ' orientation=' + orientationValue + ' rotation=' + effectiveRotationDeg + 'deg portraitEncoded=' + isPortraitEncoded);
+            console.log('[ReceiverLayout] Applied ' + fitMode + ' layout video=' + videoW + 'x' + videoH + ' displayed=' + displayedW + 'x' + displayedH + ' screen=' + screenW + 'x' + screenH + ' orientation=' + orientationValue + ' rotation=' + effectiveRotationDeg + 'deg aspectDelta=' + (aspectDelta * 100).toFixed(1) + '% portraitEncoded=' + isPortraitEncoded);
         }
 
         function applyOrientationMessage(value) {
