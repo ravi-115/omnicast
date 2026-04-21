@@ -495,9 +495,42 @@
                             sendMediaStatus(data.requestId, 'IDLE');
                         }
                         break;
+                    // Queue / track / volume probes from CAF, Google Home app, the Cast
+                    // quick-settings tile, etc. We don't support a queue, but we must reply
+                    // gracefully (or stay silent) instead of treating them as user-facing
+                    // errors. Without these cases, every probe rendered "❓ Unknown command"
+                    // on the TV.
+                    case 'QUEUE_GET_ITEM_IDS':
+                    case 'QUEUE_GET_ITEMS_INFO':
+                    case 'QUEUE_GET_ITEM_RANGE':
+                    case 'QUEUE_LOAD':
+                    case 'QUEUE_INSERT':
+                    case 'QUEUE_UPDATE':
+                    case 'QUEUE_REMOVE':
+                    case 'QUEUE_REORDER':
+                    case 'QUEUE_NEXT':
+                    case 'QUEUE_PREV':
+                    case 'EDIT_TRACKS_INFO':
+                    case 'SET_VOLUME':
+                    case 'SET_PLAYBACK_RATE':
+                    case 'PRECACHE':
+                    case 'PRELOAD':
+                    case 'SEEK':
+                        console.log('[Audio] Ignoring unsupported media command:', data.type);
+                        // Reply with current status so the sender's request resolves
+                        // instead of timing out.
+                        if (typeof data.requestId === 'number') {
+                            const playerState = currentMode === 'video'
+                                ? (remoteVideo.paused ? 'PAUSED' : 'PLAYING')
+                                : currentMode === 'audio'
+                                    ? (audioPlayer.paused ? 'PAUSED' : 'PLAYING')
+                                    : 'IDLE';
+                            sendMediaStatus(data.requestId, playerState);
+                        }
+                        break;
                     default:
-                        console.log('[Audio] Unknown command:', data.type);
-                        updateStatus('❓ Unknown command: ' + data.type);
+                        // Don't surface protocol noise on screen — just log it.
+                        console.log('[Audio] Unhandled media command:', data.type);
                 }
             } catch (error) {
                 console.error('[Audio] Command error:', error);
