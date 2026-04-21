@@ -37,6 +37,20 @@
             border-radius: 5px;
             z-index: 1000;
         }
+        #layoutDebug {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            color: #0f0;
+            font-family: monospace;
+            font-size: 14px;
+            background-color: rgba(0, 0, 0, 0.7);
+            padding: 8px 12px;
+            border-radius: 4px;
+            z-index: 1000;
+            white-space: pre;
+            display: none;
+        }
         #audioVisualizer {
             position: absolute;
             top: 50%;
@@ -62,6 +76,7 @@
 </head>
 <body>
     <div id="status">Waiting for connection...</div>
+    <div id="layoutDebug"></div>
     <video id="remoteVideo" autoplay playsinline></video>
     <audio id="audioPlayer" autoplay></audio>
     
@@ -73,6 +88,19 @@
     <script>
         const WEBRTC_NAMESPACE = 'urn:x-cast:com.omnicast.webrtc';
         const MEDIA_NAMESPACE = 'urn:x-cast:com.google.cast.media';
+
+        // Debug overlay: enabled when URL has ?debugLayout=1 (Cast appId launchUrl can pass this)
+        // or when the receiver is loaded directly in a browser tab for testing.
+        const layoutDebugEnabled = (() => {
+            try {
+                const params = new URLSearchParams(window.location.search);
+                return params.get('debugLayout') === '1';
+            } catch (_) { return false; }
+        })();
+        const layoutDebugDiv = document.getElementById('layoutDebug');
+        if (layoutDebugDiv && layoutDebugEnabled) {
+            layoutDebugDiv.style.display = 'block';
+        }
         
         let peerConnection = null;
         let castContext = null;
@@ -286,7 +314,18 @@
             remoteVideo.style.width = rightAngle ? '100vh' : '100vw';
             remoteVideo.style.height = rightAngle ? '100vw' : '100vh';
             remoteVideo.style.transform = 'translate(-50%, -50%) rotate(' + effectiveRotationDeg + 'deg)';
-            console.log('[ReceiverLayout] Applied ' + fitMode + ' layout video=' + videoW + 'x' + videoH + ' displayed=' + displayedW + 'x' + displayedH + ' screen=' + screenW + 'x' + screenH + ' orientation=' + orientationValue + ' rotation=' + effectiveRotationDeg + 'deg aspectDelta=' + (aspectDelta * 100).toFixed(1) + '% portraitEncoded=' + isPortraitEncoded);
+            const debugLine = '[ReceiverLayout] Applied ' + fitMode + ' layout video=' + videoW + 'x' + videoH + ' displayed=' + displayedW + 'x' + displayedH + ' screen=' + screenW + 'x' + screenH + ' orientation=' + orientationValue + ' rotation=' + effectiveRotationDeg + 'deg aspectDelta=' + (aspectDelta * 100).toFixed(1) + '% portraitEncoded=' + isPortraitEncoded;
+            console.log(debugLine);
+            if (layoutDebugDiv && layoutDebugEnabled) {
+                layoutDebugDiv.textContent =
+                    'fit=' + fitMode + '\n' +
+                    'video=' + videoW + 'x' + videoH + '\n' +
+                    'displayed=' + displayedW + 'x' + displayedH + '\n' +
+                    'screen=' + screenW + 'x' + screenH + '\n' +
+                    'orient=' + orientationValue + ' rot=' + effectiveRotationDeg + 'deg\n' +
+                    'aspectDelta=' + (aspectDelta * 100).toFixed(1) + '%\n' +
+                    'portraitEnc=' + isPortraitEncoded;
+            }
         }
 
         function applyOrientationMessage(value) {
