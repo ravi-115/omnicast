@@ -172,8 +172,16 @@
         options.disableIdleTimeout = false;
         options.maxInactivity = 3600;
 
+        // CRITICAL: allow this HTTPS receiver page to fetch http:// URLs
+        // from the OmniCast iOS local proxy (e.g. http://192.168.x.y:port).
+        // Cast Console removed the equivalent checkbox in 2023; this is now
+        // the only way to opt into mixed-content for a custom receiver.
+        // Without this flag the underlying Chromium silently blocks every
+        // HLS/DASH manifest + segment request, leaving the player IDLE.
+        options.unsafelyAllowMixedContent = true;
+
         context.start(options);
-        logStatus('READY');
+        logStatus('READY mixed=' + (options.unsafelyAllowMixedContent === true));
     })();
     </script>
 </body>
