@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<!--
+  OmniCast Web Video Cast Receiver
+  ================================
+  Minimal CAF (Cast Application Framework) receiver for arbitrary HLS / DASH /
+  MP4 URLs originating from the OmniCast iOS app's local proxy.
+
+  Why this exists:
+    The Default Media Receiver (CC1AD845) runs on an HTTPS Chromium page and
+    silently refuses to fetch http://192.168.x.y/... subresources from the
+    OmniCast in-app proxy (mixed-content block, no error surfaced).
+    This custom receiver MUST be registered in the Cast Developer Console with
+    "unsafelyAllowMixedContent" CHECKED so it can fetch our local HTTP proxy.
+
+  Deploy:
+    Push this file to https://github.com/ravi-115/omnicast/docs/receiver-media.html
+    (GitHub Pages serves it at https://ravi-115.github.io/omnicast/receiver-media.html)
+    Then register the URL in the Cast Console as a Custom Receiver, copy the
+    new App ID into Sources/OmniCastiOS/Info.plist under
+    OMNICAST_CAST_MEDIA_APP_ID.
+-->
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>OmniCast Media Receiver</title>
+    <script src="//www.gstatic.com/cast/sdk/libs/caf_receiver/v3/cast_receiver_framework.js"></script>
+    <style>
+        html, body {
+            margin: 0;
+            padding: 0;
+            height: 100%;
+            background: #000;
+            overflow: hidden;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        }
+        cast-media-player {
+            --theme-hue: 210;
+            --background-color: #000;
+            --splash-image: none;
+        }
+        #idleSplash {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #888;
+            font-size: 28px;
+            letter-spacing: 0.05em;
+        }
+        #idleSplash.hidden { display: none; }
+        #status {
+            position: absolute;
+            top: 12px;
+            left: 12px;
+            color: rgba(255,255,255,0.4);
+            font-size: 11px;
+            font-family: ui-monospace, Menlo, monospace;
+            background: rgba(0,0,0,0.4);
+            padding: 4px 8px;
+            border-radius: 3px;
+            z-index: 10;
+            pointer-events: none;
+            display: none;
+        }
+        #status.show { display: block; }
+    </style>
+</head>
+<body>
+    <div id="idleSplash">OmniCast</div>
+    <cast-media-player id="player"></cast-media-player>
+    <div id="status"></div>
+
+    <script>
+    (function () {
+        const splash = document.getElementById('idleSplash');
+        const statusEl = document.getElementById('status');
+
+        function logStatus(msg) {
+            console.log('[OmniCastReceiver]', msg);
+            statusEl.textContent = msg;
+            statusEl.classList.add('show');
+            clearTimeout(logStatus._t);
+            logStatus._t = setTimeout(() => statusEl.classList.remove('show'), 4000);
+        }
+
+        const context = cast.framework.CastReceiverContext.getInstance();
+        const playerManager = context.getPlayerManager();
+
+        // Allow the built-in player to load HLS / DASH / MP4 sniffed via
+        // Content-Type or URL extension. The OmniCast proxy sets correct
+        // Content-Type for both manifests and segments.
+        const playbackConfig = new cast.framework.PlaybackConfig();
+
+        // Forward Range requests so segment-based byte ranges work and
+        // expiring-token CDNs get re-resolved by the proxy on each segment.
+        playbackConfig.segmentRequestHandler = (req) => req;
+        playbackConfig.manifestRequestHandler = (req) => req;
+
+        // Fail fast if a segment 404s instead of stalling forever.
+        playbackConfig.segmentRequestRetryLimit = 3;
+        playbackConfig.manifestRequestRetryLimit = 2;
+
+        // Some CDNs (e.g. AWS CloudFront signed URLs) require credentials
+        // be omitted; default behaviour is correct here. Do not set
+        // withCredentials = true blindly — that would break many origins.
+
+        playerManager.setPlaybackConfig(playbackConfig);
+
+        playerManager.setMessageInterceptor(
+            cast.framework.messages.MessageType.LOAD,
+            (loadRequest) => {
+                splash.classList.add('hidden');
+                const url = loadRequest && loadRequest.media && loadRequest.media.contentId;
+                logStatus('LOAD ' + (url || '<no contentId>'));
+
+                // Auto-detect content type from URL extension when not provided.
+                if (loadRequest.media && !loadRequest.media.contentType && url) {
+                    const lower = url.split('?')[0].toLowerCase();
+                    if (lower.endsWith('.m3u8')) {
+                        loadRequest.media.contentType = 'application/x-mpegurl';
+                    } else if (lower.endsWith('.mpd')) {
+                        loadRequest.media.contentType = 'application/dash+xml';
+                    } else if (lower.endsWith('.mp4') || lower.endsWith('.m4v')) {
+                        loadRequest.media.contentType = 'video/mp4';
+                    } else if (lower.endsWith('.webm')) {
+                        loadRequest.media.contentType = 'video/webm';
+                    } else if (lower.endsWith('.mp3')) {
+                        loadRequest.media.contentType = 'audio/mpeg';
+                    } else {
+                        // Default to HLS — OmniCast proxy URLs always end in
+                        // /master.m3u8 or /segment.<ext>; this branch only
+                        // hits if the iOS side ever sends a stripped URL.
+                        loadRequest.media.contentType = 'application/x-mpegurl';
+                    }
+                }
+
+                // Default streamType to BUFFERED (VOD) so the seek bar shows.
+                if (loadRequest.media && !loadRequest.media.streamType) {
+                    loadRequest.media.streamType =
+                        cast.framework.messages.StreamType.BUFFERED;
+                }
+
+                return loadRequest;
+            }
+        );
+
+        playerManager.addEventListener(
+            cast.framework.events.EventType.ERROR,
+            (e) => {
+                logStatus('ERROR ' + (e.detailedErrorCode || '?') + ' ' + (e.error || ''));
+                console.error('[OmniCastReceiver] error', e);
+            }
+        );
+
+        playerManager.addEventListener(
+            cast.framework.events.EventType.PLAYER_LOAD_COMPLETE,
+            () => logStatus('LOAD_COMPLETE')
+        );
+
+        playerManager.addEventListener(
+            cast.framework.events.EventType.MEDIA_FINISHED,
+            () => {
+                splash.classList.remove('hidden');
+                logStatus('FINISHED');
+            }
+        );
+
+        const options = new cast.framework.CastReceiverOptions();
+        // Long enough to debug LOAD failures on TV; receiver shuts down
+        // automatically when sender disconnects regardless.
+        options.disableIdleTimeout = false;
+        options.maxInactivity = 3600;
+
+        context.start(options);
+        logStatus('READY');
+    })();
+    </script>
+</body>
+</html>
